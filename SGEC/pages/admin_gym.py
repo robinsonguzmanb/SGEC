@@ -16,6 +16,10 @@ except ImportError:
 from db.database_manager import get_reglas_grado, guardar_simulacion_gym, guardar_conocimiento_gym, buscar_conocimiento_gym, vaciar_conocimiento_gym, obtener_stats_conocimiento
 from utils.ia_manager import get_master_prompt
 import ollama
+from utils.navigation import render_sidebar
+
+render_sidebar()
+
 def extract_text_from_pdf(file_bytes):
     if not PyPDF2:
         return "[Error: PyPDF2 no está instalado. Añade PyPDF2 a requirements.txt]"

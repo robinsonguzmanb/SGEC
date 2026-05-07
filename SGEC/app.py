@@ -3,6 +3,8 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from db.database_manager import test_connection, init_db, ejecutar_garbage_collector
+from utils.navigation import render_sidebar
+
 st.set_page_config(
     page_title="SGEC - Local Intelligence",
     page_icon="🛡️",
@@ -11,15 +13,18 @@ st.set_page_config(
 def render_vault_unlock():
     import os
     if not os.path.exists('.master_key'):
-        st.title("🛡️ Inicialización de Bóveda (Primer Arranque)")
-        st.markdown("Bienvenido al SGEC. Para inicializar el sistema de forma segura, define la **Master Secret Key**.")
-        st.warning("⚠️ Conserva esta clave en un lugar seguro. Si se pierde, la base de datos será inaccesible.")
-        
-        with st.form("init_vault_form"):
-            secret_key = st.text_input("Ingresa la Master Secret Key", type="password")
-            confirm_key = st.text_input("Confirma la Master Secret Key", type="password")
-            submit_button = st.form_submit_button("Inicializar Core")
-            
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.title("🛡️ Inicialización de Bóveda")
+            st.markdown("Bienvenido a **SGEC - Local Intelligence**.")
+            st.info("Para inicializar el sistema de forma segura, define la **Master Secret Key**.")
+            st.warning("⚠️ Conserva esta clave en un lugar seguro. Si se pierde, la base de datos será inaccesible.")
+
+            with st.form("init_vault_form"):
+                secret_key = st.text_input("Ingresa la Master Secret Key", type="password")
+                confirm_key = st.text_input("Confirma la Master Secret Key", type="password")
+                submit_button = st.form_submit_button("Inicializar Core", use_container_width=True)
+
             if submit_button:
                 if secret_key and confirm_key:
                     if secret_key == confirm_key:
@@ -50,20 +55,24 @@ def render_vault_unlock():
 def render_login():
     import hashlib
     from db.database_manager import get_usuario, actualizar_ultimo_acceso
-    
-    st.title("🔑 Iniciar Sesión - SGEC")
-    st.markdown("Por favor, ingresa tu correo electrónico y tu Llave Única proporcionada por el Administrador.")
-    
-    with st.form("login_form"):
-        email = st.text_input("Correo Electrónico")
-        unique_key = st.text_input("Llave Única", type="password")
-        submit_button = st.form_submit_button("Ingresar")
-        
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.title("🏢 Bienvenido a SGEC")
+        st.markdown("<h4 style='text-align: center; color: #555;'>Local Intelligence</h4>", unsafe_allow_html=True)
+        st.markdown("---")
+        st.markdown("Por favor, ingresa tus credenciales corporativas.")
+
+        with st.form("login_form"):
+            email = st.text_input("Correo Electrónico Corporativo")
+            unique_key = st.text_input("Llave Única", type="password")
+            submit_button = st.form_submit_button("Ingresar", use_container_width=True)
+
         if submit_button:
             if email and unique_key:
                 secret_key = st.session_state['secret_key']
                 usuario = get_usuario(secret_key, email)
-                
+
                 if usuario:
                     if usuario['estatus_acceso'] != 'Habilitado':
                         st.error("Tu cuenta está deshabilitada. Contacta al administrador.")
@@ -73,13 +82,13 @@ def render_login():
                             st.session_state['authenticated'] = True
                             st.session_state['rol'] = usuario['rol']
                             st.session_state['email_usuario'] = usuario['email']
-                            
+
                             actualizar_ultimo_acceso(secret_key, email)
-                            
+
                             vencidas_count = ejecutar_garbage_collector(secret_key)
                             if vencidas_count > 0:
                                 st.info(f"🧹 Garbage Collector: {vencidas_count} reserva(s) expirada(s) y sus fondos han sido liberados.")
-                            
+
                             st.success(f"Bienvenido {usuario['rol']}.")
                             st.rerun()
                         else:
@@ -102,38 +111,18 @@ def main():
     elif not st.session_state['authenticated']:
         render_login()
     else:
+        render_sidebar()
         rol = st.session_state['rol']
-        st.sidebar.title("SGEC Menu")
-        st.sidebar.success(f"Conectado como: {rol}")
-        
-        if st.sidebar.button("Cerrar Sesión de Usuario"):
-            st.session_state['authenticated'] = False
-            st.session_state['rol'] = None
-            st.session_state['email_usuario'] = None
-            st.session_state['impersonating'] = False
-            st.session_state['impersonate_id'] = None
-            st.rerun()
-            
-        if 'admin_tools_unlocked' not in st.session_state:
-            st.session_state['admin_tools_unlocked'] = False
-
-        if st.session_state['rol'] == 'Administrador':
-            if st.sidebar.button("Bloquear Bóveda (Apagar Sistema)"):
-                import os
-                if os.path.exists('.master_key'):
-                    os.remove('.master_key')
-                st.session_state.clear()
-                st.rerun()
         impersonating = st.session_state.get('impersonating', False)
         efective_rol = st.session_state.get('impersonate_rol') if impersonating else rol
-        
+
         if impersonating:
             st.markdown("""
                 <div style="background-color: #ff4b4b; padding: 10px; border-radius: 5px; color: white; text-align: center; margin-bottom: 20px;">
                     <strong>🕵️ MODO SUPANTACIÓN ACTIVO:</strong> Estás viendo la interfaz como: {email} ({rol})
                 </div>
             """.format(email=st.session_state.get('impersonate_email'), rol=efective_rol), unsafe_allow_html=True)
-            
+
             with st.expander("🛠️ Herramientas de Admin (Solo visibles en modo Impersonate)"):
                 colA, colB, colC = st.columns(3)
                 with colA:
@@ -151,42 +140,6 @@ def main():
                         reservas_debug = execute_query("SELECT id_reserva, id_ceco, monto, estatus FROM Reservas ORDER BY id_reserva DESC LIMIT 5")
                         st.write("Últimas Reservas en DB:")
                         st.dataframe(reservas_debug)
-                        
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("Módulos")
-        
-        def safe_page_link(filename, label, icon):
-            path = f"pages/{filename}"
-            try:
-                st.sidebar.page_link(path, label=label, icon=icon)
-            except Exception:
-                if st.sidebar.button(f"{icon} {label}", width='stretch', key=f"nav_btn_{filename}"):
-                    st.switch_page(path)
-        if efective_rol == 'Administrador':
-            st.sidebar.markdown("---")
-            st.sidebar.subheader("🔒 Zona de Administrador")
-            if not st.session_state.get('admin_tools_unlocked'):
-                admin_key = st.sidebar.text_input("Ingresa Master Key", type="password", key="admin_key_input")
-                if st.sidebar.button("Desbloquear Opciones de Admin", type="primary"):
-                    if admin_key == st.session_state['secret_key']:
-                        st.session_state['admin_tools_unlocked'] = True
-                        st.sidebar.success("Desbloqueado.")
-                        st.rerun()
-                    else:
-                        st.sidebar.error("Clave Incorrecta")
-            else:
-                safe_page_link("admin_ingestion.py", label="Módulo de Ingesta", icon="📥")
-                safe_page_link("admin_access.py", label="Gestión de Accesos", icon="🔐")
-                safe_page_link("admin_gym.py", label="Admin Gym (LLM)", icon="⚙️")
-                safe_page_link("admin_impersonate.py", label="Modo Suplantación", icon="🎭")
-            
-        if efective_rol in ['Administrador', 'Business Partner']:
-            safe_page_link("bp_dashboard.py", label="BP Dashboard", icon="⚖️")
-            safe_page_link("executive_dashboard.py", label="Dashboard Ejecutivo", icon="📈")
-            safe_page_link("reporteria.py", label="Reportería", icon="📊")
-            
-        if efective_rol in ['Administrador', 'Líder']:
-            safe_page_link("simulation_chat.py", label="Chat de Simulación", icon="🤖")
         if efective_rol == "Líder":
             st.title("🚀 Guía de Inicio Rápido: SGEC - Tu Copiloto de Gestión")
             st.markdown("""
