@@ -1,0 +1,9 @@
+streamlit
+pandas
+cryptography
+openpyxl
+ollama
+fpdf
+xlsxwriter
+PyPDF2
+python-pptx

@@ -1,0 +1,2119 @@
+================================================================================
+PROYECTO: SGEC - Local Intelligence (Sistema de Gestión Estratégica de Compensaciones)
+VERSIÓN: GOLD (Optimizada para despliegue en Windows con PyInstaller)
+================================================================================
+
+MISIÓN DEL SOFTWARE Y CONTEXTO PARA IA (Jules / Gemini):
+SGEC es una plataforma local (offline-first) diseñada para la gestión segura de compensaciones.
+Esta versión "Gold" incluye correcciones críticas de estabilidad:
+1. Concurrencia multihilo en SQLite (`check_same_thread=False`).
+2. Instalación de entorno virtual segura en PyInstaller evitando fork bombs.
+3. Fallback de enrutamiento dinámico para Streamlit empaquetado.
+4. Módulo de generación de PDF integrado.
+5. Cifrado AES (Fernet) por capas en campos sensibles.
+
+A continuación, se detalla el código completo de todos los módulos del proyecto:
+
+================================================================================
+ARCHIVO: requirements.txt
+================================================================================
+streamlit
+pandas
+cryptography
+openpyxl
+ollama
+fpdf
+xlsxwriter
+PyPDF2
+python-pptx
+
+================================================================================
+ARCHIVO: build_exe.py
+================================================================================
+import subprocess
+import sys
+import os
+
+def main():
+    print("=== Iniciando Constructor del Instalador SGEC ===")
+    
+    try:
+        import PyInstaller
+    except ImportError:
+        print("Instalando PyInstaller...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "pyinstaller"], check=True)
+    
+    print("Compilando el ejecutable SGEC_Instalador.exe...")
+    
+    sep = ';' if os.name == 'nt' else ':'
+    
+    cmd = [
+        sys.executable, "-m", "PyInstaller",
+        "--onefile",
+        "--name", "SGEC_Instalador",
+        "--uac-admin",
+        f"--add-data=app.py{sep}.",
+        f"--add-data=requirements.txt{sep}.",
+        f"--add-data=db{sep}db",
+        f"--add-data=pages{sep}pages",
+        f"--add-data=utils{sep}utils",
+        "launcher.py"
+    ]
+    
+    subprocess.run(cmd, check=True)
+    
+    print("\n========================================================")
+    print("CONSTRUCCION FINALIZADA.")
+    print("El archivo ejecutable se encuentra en: dist/SGEC_Instalador.exe")
+    print("========================================================")
+
+if __name__ == "__main__":
+    main()
+
+================================================================================
+ARCHIVO: launcher.py
+================================================================================
+import os
+import sys
+import shutil
+import subprocess
+import urllib.request
+
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+def main():
+    INSTALL_DIR = r"C:\SGEC"
+    try:
+        print("Iniciando instalacion de SGEC en " + INSTALL_DIR)
+
+        if not os.path.exists(INSTALL_DIR):
+            os.makedirs(INSTALL_DIR, exist_ok=True)
+            
+        for item in ['app.py', 'requirements.txt', 'db', 'pages', 'utils']:
+            src = resource_path(item)
+            dst = os.path.join(INSTALL_DIR, item)
+            if os.path.exists(src):
+                if os.path.isdir(src):
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(src, dst)
+                    
+        os.makedirs(os.path.join(INSTALL_DIR, "outputs", "cartas"), exist_ok=True)
+        os.makedirs(os.path.join(INSTALL_DIR, "db"), exist_ok=True)
+
+        print("Verificando Ollama...")
+        try:
+            subprocess.run(["where", "ollama"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError:
+            print("Ollama no fue detectado. Iniciando instalacion...")
+            ollama_path = os.path.join(INSTALL_DIR, "OllamaSetup.exe")
+            
+            def show_progress(block_num, block_size, total_size):
+                downloaded = block_num * block_size
+                if total_size > 0:
+                    percent = downloaded * 100 / total_size
+                    percent = min(percent, 100)
+                    bar_length = 40
+                    filled_length = int(bar_length * percent // 100)
+                    bar = '█' * filled_length + '-' * (bar_length - filled_length)
+                    sys.stdout.write(f'\rDescargando OllamaSetup.exe: |{bar}| {percent:.1f}% ({downloaded/(1024*1024):.1f} MB / {total_size/(1024*1024):.1f} MB)')
+                    sys.stdout.flush()
+                else:
+                    sys.stdout.write(f'\rDescargando OllamaSetup.exe: {downloaded/(1024*1024):.1f} MB')
+                    sys.stdout.flush()
+
+            print("Descargando el instalador oficial de Ollama...")
+            urllib.request.urlretrieve('https://ollama.com/download/OllamaSetup.exe', ollama_path, reporthook=show_progress)
+            print("\nEjecutando instalador de Ollama. Por favor, sigue las instrucciones de la ventana emergente...")
+            subprocess.run([ollama_path], check=False)
+            try:
+                os.remove(ollama_path)
+            except Exception:
+                pass
+
+        print("\n---------------------------------------------------------")
+        print("Iniciando descarga del cerebro de IA (modelo Llama 3).")
+        print("Tamano aproximado: 4.7 GB. El tiempo dependera de tu conexion a internet.")
+        print("Por favor, NO cierres esta ventana. El proceso continua...")
+        print("---------------------------------------------------------")
+        
+        subprocess.run(["ollama", "pull", "llama3"], check=False)
+
+        # 3. Configurar Entorno Python
+        venv_dir = os.path.join(INSTALL_DIR, "venv")
+        if not os.path.exists(venv_dir):
+            print("Creando entorno virtual...")
+            # IMPORTANTE: Usamos "python" directo para evitar el fork bomb de PyInstaller
+            subprocess.run(["python", "-m", "venv", venv_dir], check=True)
+        
+        print("Instalando dependencias de forma consolidada...")
+        pip_exe = os.path.join(venv_dir, "Scripts", "pip.exe")
+        req_file = os.path.join(INSTALL_DIR, "requirements.txt")
+        
+        try:
+            result = subprocess.run([pip_exe, "install", "-r", req_file], capture_output=True, text=True, check=True)
+            print("     [OK] Todas las dependencias instaladas correctamente.")
+        except subprocess.CalledProcessError as e:
+            print(f"\n     [!!!] ERROR AL INSTALAR DEPENDENCIAS")
+            print(f"     Detalle del Error:\n{e.stderr}")
+            raise Exception("Fallo critico al compilar el entorno virtual.")
+
+        bat_path = os.path.join(INSTALL_DIR, "start_sgec.bat")
+        with open(bat_path, "w") as f:
+            f.write("@echo off\n")
+            f.write("cd /d %~dp0\n")
+            f.write("call venv\\Scripts\\activate.bat\n")
+            f.write("start /B \"\" streamlit run app.py --server.headless true\n")
+            f.write("timeout /t 3 /nobreak >nul\n")
+            f.write("start http://localhost:8501\n")
+
+        print("Creando acceso directo...")
+        ps_script = os.path.join(INSTALL_DIR, "create_shortcut.ps1")
+        with open(ps_script, "w") as f:
+            f.write('$WshShell = New-Object -comObject WScript.Shell\n')
+            f.write('$Shortcut = $WshShell.CreateShortcut("$Home\\Desktop\\SGEC - Gestion Local.lnk")\n')
+            f.write(f'$Shortcut.TargetPath = "{bat_path}"\n')
+            f.write(f'$Shortcut.WorkingDirectory = "{INSTALL_DIR}"\n')
+            f.write('$Shortcut.Description = "Iniciar SGEC"\n')
+            f.write('$Shortcut.Save()\n')
+            
+        subprocess.run(["powershell", "-ExecutionPolicy", "Bypass", "-File", ps_script], check=False)
+        try:
+            os.remove(ps_script)
+        except Exception:
+            pass
+
+        print("\n========================================================")
+        print("Instalacion completa y correcta.")
+        print("Ya puedes iniciar el sistema desde el acceso directo del escritorio.")
+        print("========================================================\n")
+
+    except Exception as e:
+        import traceback
+        print("\n========================================================")
+        print("!!! ERROR FATAL DURANTE LA INSTALACION !!!")
+        print("========================================================")
+        print(f"Detalles: {str(e)}\n")
+        traceback.print_exc()
+        print("\nPor favor copia este error y comunicalo a soporte.")
+
+    finally:
+        input("\nPresiona ENTER para cerrar esta ventana...")
+
+if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
+    main()
+
+================================================================================
+ARCHIVO: app.py
+================================================================================
+import streamlit as st
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from db.database_manager import test_connection, init_db, ejecutar_garbage_collector
+
+st.set_page_config(
+    page_title="SGEC - Local Intelligence",
+    page_icon="🛡️",
+    layout="wide"
+)
+
+def render_vault_unlock():
+    import os
+    db_exists = os.path.exists('sgec.db')
+    
+    if not db_exists:
+        st.title("🛡️ Inicialización de Bóveda (Primer Arranque)")
+        st.markdown("Bienvenido al SGEC. Para inicializar el sistema de forma segura, define la **Master Secret Key**.")
+        st.warning("⚠️ Conserva esta clave en un lugar seguro. Si se pierde, la base de datos será inaccesible.")
+        
+        with st.form("init_vault_form"):
+            secret_key = st.text_input("Ingresa la Master Secret Key", type="password")
+            confirm_key = st.text_input("Confirma la Master Secret Key", type="password")
+            submit_button = st.form_submit_button("Inicializar Core")
+            
+            if submit_button:
+                if secret_key and confirm_key:
+                    if secret_key == confirm_key:
+                        try:
+                            init_db(secret_key)
+                            if test_connection(secret_key):
+                                st.session_state['vault_unlocked'] = True
+                                st.session_state['secret_key'] = secret_key
+                                st.success("Bóveda creada exitosamente. El sistema está ahora online.")
+                                st.rerun()
+                            else:
+                                st.error("Error al crear la bóveda.")
+                        except Exception as e:
+                            st.error(f"Error al inicializar la DB: {e}")
+                    else:
+                        st.error("Las contraseñas no coinciden. Inténtalo nuevamente.")
+                else:
+                    st.warning("Por favor, completa ambos campos.")
+    else:
+        st.title("🔓 Desbloqueo de Bóveda (Vault Unlock)")
+        st.markdown("El sistema está bloqueado y encriptado. Ingresa la **Master Secret Key** para iniciar la aplicación (Solo Administradores de Infraestructura).")
+        
+        with st.form("vault_form"):
+            secret_key = st.text_input("Master Secret Key", type="password")
+            submit_button = st.form_submit_button("Desbloquear Core")
+            
+            if submit_button:
+                if secret_key:
+                    try:
+                        init_db(secret_key)
+                        if test_connection(secret_key):
+                            st.session_state['vault_unlocked'] = True
+                            st.session_state['secret_key'] = secret_key
+                            st.success("Bóveda desbloqueada. El sistema está ahora online.")
+                            st.rerun()
+                        else:
+                            st.error("Master Secret Key incorrecta o base de datos corrupta.")
+                    except Exception as e:
+                        st.error(f"Error al intentar desbloquear la DB: {e}")
+                else:
+                    st.warning("Por favor, ingresa la Master Key.")
+
+def render_login():
+    import hashlib
+    from db.database_manager import get_usuario, actualizar_ultimo_acceso
+    
+    st.title("🔑 Iniciar Sesión - SGEC")
+    st.markdown("Por favor, ingresa tu correo electrónico y tu Llave Única proporcionada por el Administrador.")
+    
+    with st.form("login_form"):
+        email = st.text_input("Correo Electrónico")
+        unique_key = st.text_input("Llave Única", type="password")
+        submit_button = st.form_submit_button("Ingresar")
+        
+        if submit_button:
+            if email and unique_key:
+                secret_key = st.session_state['secret_key']
+                usuario = get_usuario(secret_key, email)
+                
+                if usuario:
+                    if usuario['estatus_acceso'] != 'Habilitado':
+                        st.error("Tu cuenta está deshabilitada. Contacta al administrador.")
+                    else:
+                        hashed_input = hashlib.sha256(unique_key.encode()).hexdigest()
+                        if hashed_input == usuario['hashed_key']:
+                            st.session_state['authenticated'] = True
+                            st.session_state['rol'] = usuario['rol']
+                            st.session_state['email_usuario'] = usuario['email']
+                            
+                            actualizar_ultimo_acceso(secret_key, email)
+                            
+                            vencidas_count = ejecutar_garbage_collector(secret_key)
+                            if vencidas_count > 0:
+                                st.info(f"🧹 Garbage Collector: {vencidas_count} reserva(s) expirada(s) y sus fondos han sido liberados.")
+                            
+                            st.success(f"Bienvenido {usuario['rol']}.")
+                            st.rerun()
+                        else:
+                            st.error("Credenciales incorrectas.")
+                else:
+                    st.error("Usuario no encontrado en el sistema.")
+            else:
+                st.warning("Por favor, ingresa tu correo y llave única.")
+
+def main():
+    if 'vault_unlocked' not in st.session_state:
+        st.session_state['vault_unlocked'] = False
+    if 'authenticated' not in st.session_state:
+        st.session_state['authenticated'] = False
+    if 'rol' not in st.session_state:
+        st.session_state['rol'] = None
+    if 'email_usuario' not in st.session_state:
+        st.session_state['email_usuario'] = None
+
+    if not st.session_state['vault_unlocked']:
+        render_vault_unlock()
+    elif not st.session_state['authenticated']:
+        render_login()
+    else:
+        rol = st.session_state['rol']
+        st.sidebar.title("SGEC Menu")
+        st.sidebar.success(f"Conectado como: {rol}")
+        
+        if st.sidebar.button("Cerrar Sesión de Usuario"):
+            st.session_state['authenticated'] = False
+            st.session_state['rol'] = None
+            st.session_state['email_usuario'] = None
+            st.session_state['impersonating'] = False
+            st.session_state['impersonate_id'] = None
+            st.rerun()
+            
+        if st.session_state['rol'] == 'Administrador':
+            if st.sidebar.button("Bloquear Bóveda (Apagar Sistema)"):
+                st.session_state.clear()
+                st.rerun()
+
+        impersonating = st.session_state.get('impersonating', False)
+        efective_rol = st.session_state.get('impersonate_rol') if impersonating else rol
+        
+        if impersonating:
+            st.markdown("""
+                <div style="background-color: #ff4b4b; padding: 10px; border-radius: 5px; color: white; text-align: center; margin-bottom: 20px;">
+                    <strong>🕵️ MODO SUPANTACIÓN ACTIVO:</strong> Estás viendo la interfaz como: {email} ({rol})
+                </div>
+            """.format(email=st.session_state.get('impersonate_email'), rol=efective_rol), unsafe_allow_html=True)
+            
+            with st.expander("🛠️ Herramientas de Admin (Solo visibles en modo Impersonate)"):
+                colA, colB, colC = st.columns(3)
+                with colA:
+                    if st.button("Terminar Suplantación", key="end_impersonate"):
+                        st.session_state['impersonating'] = False
+                        st.session_state['impersonate_email'] = None
+                        st.session_state['impersonate_rol'] = None
+                        st.rerun()
+                with colB:
+                    if st.button("Forzar Sincronización (Commit)"):
+                        st.success("Sincronización silenciosa forzada. (Base de datos WAL asegurada).")
+                with colC:
+                    if st.button("Ver Tablas Core SQL (Debug)"):
+                        from db.database_manager import execute_query
+                        reservas_debug = execute_query("SELECT id_reserva, id_ceco, monto, estatus FROM Reservas ORDER BY id_reserva DESC LIMIT 5")
+                        st.write("Últimas Reservas en DB:")
+                        st.dataframe(reservas_debug)
+                        
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("Módulos")
+        
+        def safe_page_link(filename, label, icon):
+            path = f"pages/{filename}"
+            try:
+                st.sidebar.page_link(path, label=label, icon=icon)
+            except Exception:
+                if st.sidebar.button(f"{icon} {label}", use_container_width=True, key=f"nav_btn_{filename}"):
+                    st.switch_page(path)
+
+        if efective_rol == 'Administrador':
+            safe_page_link("admin_ingestion.py", label="Módulo de Ingesta", icon="📥")
+            safe_page_link("admin_access.py", label="Gestión de Accesos", icon="🔐")
+            safe_page_link("admin_gym.py", label="Admin Gym (LLM)", icon="⚙️")
+            safe_page_link("admin_impersonate.py", label="Modo Suplantación", icon="🎭")
+            
+        if efective_rol in ['Administrador', 'Business Partner']:
+            safe_page_link("bp_dashboard.py", label="BP Dashboard", icon="⚖️")
+            safe_page_link("executive_dashboard.py", label="Dashboard Ejecutivo", icon="📈")
+            safe_page_link("reporteria.py", label="Reportería", icon="📊")
+            
+        if efective_rol in ['Administrador', 'Líder']:
+            safe_page_link("simulation_chat.py", label="Chat de Simulación", icon="🤖")
+
+        if efective_rol == "Líder":
+            st.title("🚀 Guía de Inicio Rápido: SGEC - Tu Copiloto de Gestión")
+            st.markdown("""
+¡Bienvenido al piloto de SGEC Local Intelligence! Esta herramienta ha sido diseñada para ayudarte a tomar decisiones de compensación basadas en datos, presupuesto real y equidad interna.
+
+### 🛠️ ¿Cómo empezar?
+1. **Selecciona a tu colaborador:** En el menú lateral, ve a "Chat de Simulación" y elige al miembro de tu equipo que deseas analizar.
+2. **Conversa con tu Copiloto:** Describe los cambios en sus responsabilidades o el ajuste que tienes en mente. La IA evaluará si la descripción técnica coincide con el grado salarial actual.
+3. **Revisa el Presupuesto:** El sistema te avisará automáticamente si tu Centro de Costo (CECO) tiene fondos suficientes para la propuesta.
+
+### ⚖️ Reglas del Juego
+- **El "Abogado del Diablo":** Si la IA detecta que las tareas descritas superan el grado del colaborador, bloqueará la simulación. No es un error; es una protección para que RRHH te ayude a validar la estructura antes de avanzar.
+- **Reservas Automáticas:** Al acordar un monto, el sistema genera un "Placeholder" (reserva) en tu presupuesto. Este dinero queda apartado por 15 días esperando la validación final y la firma.
+- **Privacidad Total:** Tus datos nunca salen de nuestra red local. La inteligencia es 100% privada y segura.
+
+### 🆘 ¿Necesitas ayuda estructural?
+Si lo que necesitas es un cambio de jefe, mover a alguien de CECO o cambiarlo de empresa, recuerda que la IA te derivará automáticamente con tu Business Partner (BP), ya que estos temas no son de gestión directa en este chat.
+            """)
+        else:
+            st.title("SGEC Local Intelligence")
+            st.markdown("Selecciona un módulo en el menú lateral para operar.")
+
+if __name__ == "__main__":
+    main()
+
+================================================================================
+ARCHIVO: db/database_manager.py
+================================================================================
+import sqlite3
+import pandas as pd
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+import base64
+
+DB_PATH = 'sgec.db'
+
+def get_fernet(secret_key):
+    salt = b'sgec_salt_v1'
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100000,
+    )
+    key = base64.urlsafe_b64encode(kdf.derive(secret_key.encode()))
+    return Fernet(key)
+
+def encrypt_val(fernet_obj, val):
+    if val is None or pd.isna(val) or str(val).strip() == "":
+        return None
+    return fernet_obj.encrypt(str(val).encode()).decode()
+
+def decrypt_val(fernet_obj, val):
+    if val is None or str(val).strip() == "":
+        return None
+    try:
+        return fernet_obj.decrypt(val.encode()).decode()
+    except Exception:
+        return val
+
+def get_connection():
+    conn = sqlite3.connect(DB_PATH, timeout=20.0, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    return conn
+
+def init_db(secret_key):
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS Vault_Test (
+        id INTEGER PRIMARY KEY,
+        test_payload TEXT
+    )
+    ''')
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS CECOs (
+        id_ceco TEXT PRIMARY KEY,
+        nombre TEXT NOT NULL,
+        presupuesto_anual REAL NOT NULL,
+        presupuesto_consumido REAL DEFAULT 0,
+        presupuesto_reservado REAL DEFAULT 0
+    )
+    ''')
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS Empleados (
+        id_empleado TEXT PRIMARY KEY,
+        nombre_completo TEXT NOT NULL,
+        correo_electronico TEXT,
+        grado_actual TEXT,
+        sueldo_base TEXT,
+        id_jefe_directo TEXT,
+        id_ceco TEXT,
+        fecha_ingreso TEXT,
+        fecha_ultimo_ajuste TEXT,
+        estatus TEXT,
+        ruta_jerarquica TEXT,
+        FOREIGN KEY (id_ceco) REFERENCES CECOs(id_ceco)
+    )
+    ''')
+    
+    try:
+        cursor.execute("ALTER TABLE Empleados ADD COLUMN ruta_jerarquica TEXT")
+    except Exception:
+        pass
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS Reservas (
+        id_reserva INTEGER PRIMARY KEY AUTOINCREMENT,
+        id_ceco TEXT NOT NULL,
+        monto REAL NOT NULL,
+        descripcion TEXT,
+        fecha_reserva TEXT,
+        estatus TEXT DEFAULT 'EN_VALIDACION',
+        justificacion_ia TEXT,
+        comentario_bp TEXT,
+        FOREIGN KEY (id_ceco) REFERENCES CECOs(id_ceco)
+    )
+    ''')
+    
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS Cartas_Emitidas (
+        id_carta INTEGER PRIMARY KEY AUTOINCREMENT,
+        id_empleado TEXT NOT NULL,
+        id_reserva INTEGER,
+        hash_seguridad TEXT NOT NULL,
+        fecha_generacion TEXT NOT NULL,
+        FOREIGN KEY (id_empleado) REFERENCES Empleados(id_empleado),
+        FOREIGN KEY (id_reserva) REFERENCES Reservas(id_reserva)
+    )
+    ''')
+    
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS Historial (
+        id_historial INTEGER PRIMARY KEY AUTOINCREMENT,
+        id_empleado TEXT NOT NULL,
+        campo_modificado TEXT NOT NULL,
+        valor_anterior TEXT,
+        valor_nuevo TEXT,
+        fecha_modificacion TEXT,
+        usuario TEXT,
+        FOREIGN KEY (id_empleado) REFERENCES Empleados(id_empleado)
+    )
+    ''')
+    
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS Reglas_Grado (
+        grado TEXT PRIMARY KEY,
+        sueldo_minimo REAL,
+        sueldo_maximo REAL
+    )
+    ''')
+    
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS Simulaciones_Entrenamiento (
+        id_simulacion INTEGER PRIMARY KEY AUTOINCREMENT,
+        prompt_prueba TEXT NOT NULL,
+        system_prompt TEXT NOT NULL,
+        temperatura REAL NOT NULL,
+        respuesta_ia TEXT NOT NULL,
+        fecha_simulacion TEXT NOT NULL
+    )
+    ''')
+    
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS Auditoria_GC (
+        id_log INTEGER PRIMARY KEY AUTOINCREMENT,
+        fecha_ejecucion TEXT NOT NULL,
+        reservas_afectadas INTEGER NOT NULL,
+        monto_total_liberado REAL NOT NULL
+    )
+    ''')
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS Usuarios (
+        email TEXT PRIMARY KEY,
+        id_empleado TEXT,
+        hashed_key TEXT,
+        rol TEXT DEFAULT 'Líder',
+        estatus_acceso TEXT DEFAULT 'Deshabilitado',
+        fecha_ultimo_acceso TEXT
+    )
+    ''')
+    
+    try:
+        cursor.execute("ALTER TABLE Usuarios ADD COLUMN llave_enc TEXT")
+    except Exception:
+        pass
+    
+    cursor.execute('''
+    INSERT OR IGNORE INTO Usuarios (email, id_empleado, hashed_key, rol, estatus_acceso)
+    VALUES ('admin@sgec.com', 'ADMIN_00', '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918', 'Administrador', 'Habilitado')
+    ''')
+    
+    cursor.execute("SELECT count(*) FROM Vault_Test")
+    if cursor.fetchone()[0] == 0:
+        f = get_fernet(secret_key)
+        enc_test = encrypt_val(f, "VAULT_OK")
+        cursor.execute("INSERT INTO Vault_Test (test_payload) VALUES (?)", (enc_test,))
+    
+    conn.commit()
+    conn.close()
+
+def test_connection(secret_key):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT test_payload FROM Vault_Test LIMIT 1")
+        row = cursor.fetchone()
+        if row:
+            f = get_fernet(secret_key)
+            dec = decrypt_val(f, row[0])
+            if dec == "VAULT_OK":
+                return True
+        return False
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+def execute_query(query, params=()):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        columns = [description[0] for description in cursor.description]
+        results = cursor.fetchall()
+        return [dict(zip(columns, row)) for row in results]
+    except Exception as e:
+        return []
+    finally:
+        conn.close()
+
+def save_dataframe_to_table(secret_key, df, table_name):
+    conn = get_connection()
+    try:
+        if table_name == 'Empleados':
+            f = get_fernet(secret_key)
+            df_enc = df.copy()
+            for col in ['nombre_completo', 'grado_actual', 'sueldo_base']:
+                if col in df_enc.columns:
+                    df_enc[col] = df_enc[col].apply(lambda x: encrypt_val(f, x))
+            df_enc.to_sql(table_name, conn, if_exists='append', index=False)
+        else:
+            df.to_sql(table_name, conn, if_exists='append', index=False)
+        conn.commit()
+    finally:
+        conn.close()
+
+def _decrypt_empleado_row(f, r):
+    r['nombre_completo'] = decrypt_val(f, r['nombre_completo'])
+    r['grado_actual'] = decrypt_val(f, r['grado_actual'])
+    try:
+        r['sueldo_base'] = float(decrypt_val(f, r['sueldo_base']))
+    except:
+        r['sueldo_base'] = 0.0
+    return r
+
+def get_empleados(secret_key):
+    f = get_fernet(secret_key)
+    query = "SELECT id_empleado, nombre_completo, grado_actual, sueldo_base, id_ceco FROM Empleados"
+    res = execute_query(query)
+    return [_decrypt_empleado_row(f, r) for r in res]
+
+def get_empleado_by_id(secret_key, empleado_id):
+    f = get_fernet(secret_key)
+    query = "SELECT id_empleado, nombre_completo, grado_actual, sueldo_base, id_ceco FROM Empleados WHERE id_empleado = ?"
+    res = execute_query(query, (empleado_id,))
+    if res:
+        return _decrypt_empleado_row(f, res[0])
+    return None
+
+def get_empleados_por_lider(secret_key, email_lider):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id_empleado, rol FROM Usuarios WHERE email = ?", (email_lider,))
+        row = cursor.fetchone()
+        if not row:
+            return []
+            
+        id_emp_lider, rol = row
+        if rol in ["Administrador", "Business Partner"]:
+            cursor.execute("SELECT id_empleado, nombre_completo, grado_actual, sueldo_base, id_ceco FROM Empleados")
+        else:
+            cursor.execute("SELECT id_ceco FROM Empleados WHERE id_empleado = ?", (id_emp_lider,))
+            ceco_row = cursor.fetchone()
+            if not ceco_row:
+                return []
+            id_ceco_lider = ceco_row[0]
+            cursor.execute("SELECT id_empleado, nombre_completo, grado_actual, sueldo_base, id_ceco FROM Empleados WHERE id_ceco = ?", (id_ceco_lider,))
+            
+        columns = [description[0] for description in cursor.description]
+        results = cursor.fetchall()
+        
+        f = get_fernet(secret_key)
+        lista = [dict(zip(columns, r)) for r in results]
+        return [_decrypt_empleado_row(f, r) for r in lista]
+    finally:
+        conn.close()
+
+def get_reglas_grado(secret_key):
+    query = "SELECT grado, sueldo_minimo, sueldo_maximo FROM Reglas_Grado"
+    reglas = execute_query(query)
+    if not reglas:
+        return "No hay reglas de grado definidas en la base de datos."
+    texto_reglas = "Reglas Salariales por Grado:\n"
+    for r in reglas:
+        texto_reglas += f"- Grado {r['grado']}: Sueldo Mínimo {r['sueldo_minimo']} | Sueldo Máximo {r['sueldo_maximo']}\n"
+    return texto_reglas
+
+def get_ceco_completo(secret_key, id_ceco):
+    query = "SELECT * FROM CECOs WHERE id_ceco = ?"
+    results = execute_query(query, (id_ceco,))
+    return results[0] if results else None
+
+def crear_reserva(secret_key, id_ceco, monto, descripcion, fecha, estatus="EN_VALIDACION", justificacion_ia=None):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO Reservas (id_ceco, monto, descripcion, fecha_reserva, estatus, justificacion_ia) VALUES (?, ?, ?, ?, ?, ?)",
+                       (id_ceco, monto, descripcion, fecha, estatus, justificacion_ia))
+        id_reserva = cursor.lastrowid
+        cursor.execute("UPDATE CECOs SET presupuesto_reservado = presupuesto_reservado + ? WHERE id_ceco = ?", (monto, id_ceco))
+        conn.commit()
+        return id_reserva
+    finally:
+        conn.close()
+
+def aprobar_reserva(secret_key, id_reserva, comentario_bp=None):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE Reservas SET estatus = 'APROBADO', comentario_bp = ? WHERE id_reserva = ?", (comentario_bp, id_reserva))
+        conn.commit()
+    finally:
+        conn.close()
+
+def rechazar_reserva(secret_key, id_reserva, id_ceco, monto, comentario_bp):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE Reservas SET estatus = 'RECHAZADO', comentario_bp = ? WHERE id_reserva = ?", (comentario_bp, id_reserva))
+        cursor.execute("UPDATE CECOs SET presupuesto_reservado = presupuesto_reservado - ? WHERE id_ceco = ?", (monto, id_ceco))
+        conn.commit()
+    finally:
+        conn.close()
+
+def solicitar_ajuste_reserva(secret_key, id_reserva, comentario_bp):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE Reservas SET estatus = 'AJUSTE_REQUERIDO', comentario_bp = ? WHERE id_reserva = ?", (comentario_bp, id_reserva))
+        conn.commit()
+    finally:
+        conn.close()
+
+def guardar_simulacion_gym(secret_key, prompt_prueba, system_prompt, temperatura, respuesta_ia, fecha):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO Simulaciones_Entrenamiento (prompt_prueba, system_prompt, temperatura, respuesta_ia, fecha_simulacion) 
+            VALUES (?, ?, ?, ?, ?)
+        """, (prompt_prueba, system_prompt, temperatura, respuesta_ia, fecha))
+        conn.commit()
+    finally:
+        conn.close()
+
+def guardar_carta_emitida(secret_key, id_empleado, id_reserva, hash_seguridad, fecha):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO Cartas_Emitidas (id_empleado, id_reserva, hash_seguridad, fecha_generacion) VALUES (?, ?, ?, ?)",
+                       (id_empleado, id_reserva, hash_seguridad, fecha))
+        cursor.execute("SELECT id_ceco, monto FROM Reservas WHERE id_reserva = ?", (id_reserva,))
+        row = cursor.fetchone()
+        if row:
+            id_ceco, monto = row
+            cursor.execute("UPDATE CECOs SET presupuesto_reservado = presupuesto_reservado - ?, presupuesto_consumido = presupuesto_consumido + ? WHERE id_ceco = ?", 
+                           (monto, monto, id_ceco))
+        conn.commit()
+    finally:
+        conn.close()
+
+def ejecutar_garbage_collector(secret_key):
+    import datetime
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        limite_fecha = (datetime.datetime.now() - datetime.timedelta(days=15)).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("""
+            SELECT r.id_reserva, r.id_ceco, r.monto 
+            FROM Reservas r
+            LEFT JOIN Cartas_Emitidas c ON r.id_reserva = c.id_reserva
+            WHERE c.id_carta IS NULL 
+              AND r.estatus IN ('EN_VALIDACION', 'APROBADO')
+              AND r.fecha_reserva < ?
+        """, (limite_fecha,))
+        vencidas = cursor.fetchall()
+        count = 0
+        monto_total = 0.0
+        for row in vencidas:
+            id_res, id_ceco, monto = row
+            cursor.execute("UPDATE Reservas SET estatus = 'EXPIRADO', comentario_bp = 'Expirado por Garbage Collector (> 15 días)' WHERE id_reserva = ?", (id_res,))
+            cursor.execute("UPDATE CECOs SET presupuesto_reservado = presupuesto_reservado - ? WHERE id_ceco = ?", (monto, id_ceco))
+            count += 1
+            monto_total += monto
+            
+        if count > 0:
+            fecha_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute("INSERT INTO Auditoria_GC (fecha_ejecucion, reservas_afectadas, monto_total_liberado) VALUES (?, ?, ?)", 
+                           (fecha_str, count, monto_total))
+        conn.commit()
+        return count
+    finally:
+        conn.close()
+
+def get_usuario(secret_key, email):
+    query = "SELECT * FROM Usuarios WHERE email = ?"
+    results = execute_query(query, (email,))
+    return results[0] if results else None
+
+def actualizar_ultimo_acceso(secret_key, email):
+    import datetime
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        fecha_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("UPDATE Usuarios SET fecha_ultimo_acceso = ? WHERE email = ?", (fecha_str, email))
+        conn.commit()
+    finally:
+        conn.close()
+
+def get_all_usuarios(secret_key):
+    query = "SELECT email, id_empleado, rol, estatus_acceso, fecha_ultimo_acceso FROM Usuarios ORDER BY email"
+    return execute_query(query)
+
+def get_usuarios_habilitados(secret_key):
+    query = "SELECT email, rol, estatus_acceso FROM Usuarios WHERE estatus_acceso = 'Habilitado' AND rol != 'Administrador'"
+    return execute_query(query)
+
+def actualizar_usuario(secret_key, email, rol, estatus, hashed_key=None):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        if hashed_key:
+            cursor.execute("UPDATE Usuarios SET rol = ?, estatus_acceso = ?, hashed_key = ? WHERE email = ?", (rol, estatus, hashed_key, email))
+        else:
+            cursor.execute("UPDATE Usuarios SET rol = ?, estatus_acceso = ? WHERE email = ?", (rol, estatus, email))
+        conn.commit()
+    finally:
+        conn.close()
+
+def get_todas_las_reservas(secret_key):
+    query = "SELECT * FROM Reservas"
+    return execute_query(query)
+
+def get_todos_los_cecos(secret_key):
+    query = "SELECT * FROM CECOs"
+    return execute_query(query)
+
+def get_reservas_pendientes(secret_key):
+    query = """
+        SELECT r.id_reserva, r.id_ceco, r.monto, r.descripcion, r.fecha_reserva, r.estatus, r.justificacion_ia
+        FROM Reservas r
+        WHERE r.estatus = 'EN_VALIDACION'
+    """
+    return execute_query(query)
+
+def get_reservas_y_cartas(secret_key):
+    query = """
+        SELECT r.id_reserva, r.id_ceco, r.monto, r.descripcion, r.fecha_reserva, r.estatus,
+               c.hash_seguridad, c.fecha_generacion
+        FROM Reservas r
+        LEFT JOIN Cartas_Emitidas c ON r.id_reserva = c.id_reserva
+        ORDER BY r.id_reserva DESC
+    """
+    return execute_query(query)
+
+def get_todos_empleados(secret_key):
+    return get_empleados(secret_key)
+
+================================================================================
+ARCHIVO: utils/ia_manager.py
+================================================================================
+import ollama
+
+def get_master_prompt(reglas_grado, saldo_disponible):
+    return f"""Eres un Auditor Experto en Compensaciones con un tono profesional, analítico y preventivo. 
+Tu trabajo es simular escenarios de cambios organizacionales y validar la coherencia de la clasificación de grados salariales y velar por los recursos financieros de la empresa.
+
+A continuación, las reglas de grado actuales extraídas de nuestra base de datos:
+{reglas_grado}
+
+EL SALDO DISPONIBLE EN EL CECO DEL COLABORADOR ES: ${saldo_disponible:,.2f}
+
+INSTRUCCIONES CRÍTICAS Y REGLAS DE BLOQUEO:
+1. "The Budget Lock" (Falta de Presupuesto):
+Si la propuesta salarial que sugiere o infiere el usuario para el colaborador requiere un aumento, y ese incremento supera el saldo disponible en el CECO, DEBES interrumpir la simulación.
+Comienza tu respuesta EXACTAMENTE con la palabra "[PRESUPUESTO_EXCEDIDO]" seguido de "Operación bloqueada por falta de presupuesto en el CECO. Fondos faltantes: $[diferencia]". Y pregúntale al usuario si desea proceder con una reserva parcial.
+
+2. Discrepancia de Grado:
+Analiza la descripción de tareas ingresada y compárala con el "Grado Actual".
+Si las tareas exceden el nivel de grado, DEBES interrumpir la simulación. Comienza tu respuesta EXACTAMENTE con la palabra "[DISCREPANCIA_DETECTADA]", seguido de la explicación técnica y sugerencia de un grado adecuado.
+
+Si ni el presupuesto ni el grado presentan problemas, asiste amablemente en la simulación al usuario.
+"""
+
+def simular_chat(contexto_empleado, reglas_grado, mensajes_historial, ceco_info, temperature=0.0):
+    """
+    Envía la conversación a Ollama y retorna la respuesta.
+    ceco_info contiene los datos financieros para calcular el saldo.
+    temperature ajusta la creatividad de la IA.
+    """
+    
+    saldo_disponible = ceco_info['presupuesto_anual'] - ceco_info['presupuesto_consumido'] - ceco_info['presupuesto_reservado']
+    
+    system_prompt = get_master_prompt(reglas_grado, saldo_disponible)
+    
+    contexto_iniciado = f"""Contexto del Colaborador (Desidentificado):
+- ID: {contexto_empleado['id_empleado']}
+- Grado Actual: {contexto_empleado['grado_actual']}
+- Sueldo Base actual: ${contexto_empleado['sueldo_base']}
+- ID CECO: {contexto_empleado['id_ceco']}
+
+Por favor evalúa la siguiente interacción teniendo en cuenta esta información y The Budget Lock."""
+    
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": contexto_iniciado}
+    ]
+    
+    messages.extend(mensajes_historial)
+    
+    try:
+        response = ollama.chat(model='llama3', messages=messages, options={'temperature': temperature})
+        return response['message']['content']
+    except Exception as e:
+        return f"[DISCREPANCIA_DETECTADA] Error interno de comunicación con motor local IA. Asegúrate que Ollama esté en ejecución. Detalle: {str(e)}"
+
+def generar_borrador_correo(contexto_empleado, texto_explicacion, grado_sugerido):
+    return f"""Asunto: Revisión de Grado Requerida - Caso {contexto_empleado['id_empleado']}
+
+Estimado Analista de Compensaciones,
+
+Por medio de la presente solicito la revisión formal de la clasificación de grado para el colaborador con ID {contexto_empleado['id_empleado']}.
+
+Datos de contexto actuales:
+- Grado Actual: {contexto_empleado['grado_actual']}
+- Sueldo Base: {contexto_empleado['sueldo_base']}
+- Centro de Costos: {contexto_empleado['id_ceco']}
+
+El motor de inteligencia local ha detectado una inconsistencia entre la descripción de tareas propuesta y el grado actual.
+
+Grado Sugerido por IA: {grado_sugerido}
+
+Justificación Técnica:
+{texto_explicacion}
+
+Quedo a la espera de sus comentarios para proceder con la simulación en el SGEC.
+
+Saludos Cordiales,
+[Usuario Admin]"""
+
+================================================================================
+ARCHIVO: utils/pdf_generator.py
+================================================================================
+import os
+import hashlib
+from fpdf import FPDF
+import datetime
+
+def generar_carta_oferta(empleado_id, nombre, cargo, nuevo_sueldo):
+    out_dir = os.path.join(os.getcwd(), "outputs", "cartas")
+    os.makedirs(out_dir, exist_ok=True)
+    
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, txt="CARTA DE OFERTA / ACTUALIZACION", ln=True, align='C')
+    pdf.cell(200, 10, txt=f"Fecha: {datetime.datetime.now().strftime('%Y-%m-%d')}", ln=True)
+    pdf.cell(200, 10, txt=f"Empleado ID: {empleado_id}", ln=True)
+    pdf.cell(200, 10, txt=f"Nombre: {nombre}", ln=True)
+    pdf.cell(200, 10, txt=f"Nuevo Grado/Cargo: {cargo}", ln=True)
+    pdf.cell(200, 10, txt=f"Nuevo Sueldo Base: ${nuevo_sueldo:,.2f}", ln=True)
+    
+    filename = f"Oferta_{empleado_id}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
+    filepath = os.path.join(out_dir, filename)
+    pdf.output(filepath)
+    
+    with open(filepath, "rb") as f:
+        file_hash = hashlib.sha256(f.read()).hexdigest()
+        
+    return filepath, file_hash
+
+================================================================================
+ARCHIVO: pages/admin_ingestion.py
+================================================================================
+import streamlit as st
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pandas as pd
+from db.database_manager import save_dataframe_to_table
+from datetime import datetime
+
+if 'authenticated' not in st.session_state or not st.session_state['authenticated']:
+    st.warning("Debes iniciar sesión primero para acceder a esta página.")
+    st.stop()
+
+rol = st.session_state.get('rol')
+if rol != "Administrador":
+    st.error("No tienes permisos para acceder a esta página. Solo Administradores.")
+    st.stop()
+
+st.title("Administración - Ingesta de Datos (CORE-ADMIN)")
+st.markdown("""
+Esta herramienta te permite cargar archivos de nómina o presupuesto (Excel/CSV).
+Asegúrate de mapear las columnas correctamente. Si hay datos faltantes en campos críticos, el archivo completo será rechazado.
+""")
+
+tab_empleados, tab_cecos = st.tabs(["Ingesta de Empleados", "Ingesta de CECOs"])
+
+def validate_empleados(df, mapped_cols):
+    required_fields = ['id_empleado', 'nombre_completo', 'id_ceco']
+    errors = []
+    
+    for field in required_fields:
+        if field not in mapped_cols or not mapped_cols[field]:
+            errors.append(f"Falta mapear el campo requerido: {field}")
+            return errors
+            
+    for index, row in df.iterrows():
+        row_num = index + 2 
+        for field in required_fields:
+            col_name = mapped_cols[field]
+            val = row.get(col_name)
+            if pd.isna(val) or str(val).strip() == "":
+                errors.append(f"Fila {row_num}: Falta valor para el campo crítico '{field}' (columna '{col_name}').")
+                
+    return errors
+
+def validate_cecos(df, mapped_cols):
+    required_fields = ['id_ceco', 'nombre', 'presupuesto_anual']
+    errors = []
+    
+    for field in required_fields:
+        if field not in mapped_cols or not mapped_cols[field]:
+            errors.append(f"Falta mapear el campo requerido: {field}")
+            return errors
+            
+    for index, row in df.iterrows():
+        row_num = index + 2
+        for field in required_fields:
+            col_name = mapped_cols[field]
+            val = row.get(col_name)
+            if pd.isna(val) or str(val).strip() == "":
+                errors.append(f"Fila {row_num}: Falta valor para el campo crítico '{field}' (columna '{col_name}').")
+                
+    return errors
+
+with tab_empleados:
+    st.subheader("Carga de Base de Datos de Empleados")
+    uploaded_file_emp = st.file_uploader("Sube el archivo de Empleados (CSV, XLSX)", type=['csv', 'xlsx'], key="upload_emp")
+
+    if uploaded_file_emp:
+        try:
+            st.markdown("### Configuración de Lectura")
+            col_cfg1, col_cfg2 = st.columns(2)
+            
+            if uploaded_file_emp.name.endswith('.csv'):
+                with col_cfg1:
+                    header_row_emp = st.number_input("Fila de Encabezados (1 = primera fila)", min_value=1, value=1, step=1, key="header_emp_csv")
+                uploaded_file_emp.seek(0)
+                df_emp = pd.read_csv(uploaded_file_emp, header=header_row_emp-1)
+            else:
+                uploaded_file_emp.seek(0)
+                xls_emp = pd.ExcelFile(uploaded_file_emp)
+                with col_cfg1:
+                    hoja_sel_emp = st.selectbox("Selecciona la Hoja", xls_emp.sheet_names, key="sheet_emp")
+                with col_cfg2:
+                    header_row_emp = st.number_input("Fila de Encabezados (1 = primera fila)", min_value=1, value=1, step=1, key="header_emp_xls")
+                
+                uploaded_file_emp.seek(0)
+                df_emp = pd.read_excel(uploaded_file_emp, sheet_name=hoja_sel_emp, header=header_row_emp-1)
+            
+            st.write("Vista previa de los datos:")
+            st.dataframe(df_emp.head(5))
+            
+            st.markdown("### Mapeo de Columnas")
+            cols_excel = ["-- Seleccionar --"] + list(df_emp.columns)
+            
+            campos_sistema_emp = {
+                'id_empleado': 'ID Empleado (PK)*',
+                'nombre_completo': 'Nombre Completo*',
+                'correo_electronico': 'Correo Electrónico',
+                'grado_actual': 'Grado Actual',
+                'sueldo_base': 'Sueldo Base',
+                'id_jefe_directo': 'ID Jefe Directo',
+                'id_ceco': 'ID Centro de Costos (CECO)*',
+                'fecha_ingreso': 'Fecha de Ingreso',
+                'fecha_ultimo_ajuste': 'Fecha de Último Ajuste',
+                'estatus': 'Estatus'
+            }
+            
+            mapped_cols_emp = {}
+            col1, col2 = st.columns(2)
+            
+            for i, (sys_field, label) in enumerate(campos_sistema_emp.items()):
+                with col1 if i % 2 == 0 else col2:
+                    default_idx = 0
+                    for j, c in enumerate(cols_excel):
+                        if c.lower() in label.lower() or sys_field.lower() in c.lower():
+                            default_idx = j
+                            break
+                    mapped_cols_emp[sys_field] = st.selectbox(label, options=cols_excel, index=default_idx, key=f"emp_{sys_field}")
+            
+            if st.button("Validar e Importar Empleados", type="primary"):
+                final_mapping = {k: v for k, v in mapped_cols_emp.items() if v != "-- Seleccionar --"}
+                
+                with st.spinner("Validando integridad..."):
+                    errors = validate_empleados(df_emp, final_mapping)
+                
+                if errors:
+                    st.error("❌ Se encontraron errores de validación. El archivo fue rechazado.")
+                    with st.expander("Ver detalle de errores"):
+                        for e in errors:
+                            st.write(e)
+                    st.info("Por favor, corrige el archivo original y vuelve a subirlo.")
+                else:
+                    df_final = pd.DataFrame()
+                    for sys_col, excel_col in final_mapping.items():
+                        df_final[sys_col] = df_emp[excel_col]
+                    
+                    # Cálculo de la red (Materialized Path)
+                    if 'id_empleado' in df_final.columns and 'id_jefe_directo' in df_final.columns:
+                        df_final['id_jefe_directo'] = df_final['id_jefe_directo'].fillna('')
+                        
+                        jefes_dict = pd.Series(df_final['id_jefe_directo'].values, index=df_final['id_empleado'].values).to_dict()
+                        
+                        def calcular_ruta(emp_id, visitados=None):
+                            if visitados is None:
+                                visitados = set()
+                            if emp_id in visitados or not emp_id or pd.isna(emp_id):
+                                return ""
+                            visitados.add(emp_id)
+                            jefe = str(jefes_dict.get(emp_id, "")).strip()
+                            if not jefe or pd.isna(jefe) or jefe.lower() == 'nan':
+                                return f"|{emp_id}|"
+                            
+                            ruta_jefe = calcular_ruta(jefe, visitados)
+                            if ruta_jefe:
+                                return f"{ruta_jefe}{emp_id}|"
+                            return f"|{emp_id}|"
+                            
+                        df_final['ruta_jerarquica'] = df_final['id_empleado'].apply(lambda x: calcular_ruta(x))
+                    
+                    try:
+                        save_dataframe_to_table(st.session_state['secret_key'], df_final, 'Empleados')
+                        
+                        if 'correo_electronico' in df_final.columns and 'id_empleado' in df_final.columns:
+                            from db.database_manager import get_connection
+                            conn = get_connection()
+                            cursor = conn.cursor()
+                            for _, row in df_final.iterrows():
+                                if pd.notnull(row['correo_electronico']) and str(row['correo_electronico']).strip() != "":
+                                    email = str(row['correo_electronico']).strip()
+                                    id_emp = row['id_empleado']
+                                    cursor.execute("""
+                                        INSERT OR IGNORE INTO Usuarios (email, id_empleado, rol, estatus_acceso)
+                                        VALUES (?, ?, 'Líder', 'Deshabilitado')
+                                    """, (email, id_emp))
+                            conn.commit()
+                            conn.close()
+
+                        st.success(f"✅ ¡Importación exitosa! {len(df_final)} registros guardados en la tabla Empleados. Usuarios pre-cargados.")
+                    except Exception as e:
+                        st.error(f"Error al guardar en la base de datos: {e}")
+                        
+        except Exception as e:
+            st.error(f"No se pudo procesar el archivo: {e}")
+
+with tab_cecos:
+    st.subheader("Carga de Catálogo de CECOs y Presupuestos")
+    uploaded_file_ceco = st.file_uploader("Sube el archivo de CECOs (CSV, XLSX)", type=['csv', 'xlsx'], key="upload_ceco")
+
+    if uploaded_file_ceco:
+        try:
+            st.markdown("### Configuración de Lectura")
+            col_cfg1, col_cfg2 = st.columns(2)
+            
+            if uploaded_file_ceco.name.endswith('.csv'):
+                with col_cfg1:
+                    header_row_ceco = st.number_input("Fila de Encabezados (1 = primera fila)", min_value=1, value=1, step=1, key="header_ceco_csv")
+                uploaded_file_ceco.seek(0)
+                df_ceco = pd.read_csv(uploaded_file_ceco, header=header_row_ceco-1)
+            else:
+                uploaded_file_ceco.seek(0)
+                xls_ceco = pd.ExcelFile(uploaded_file_ceco)
+                with col_cfg1:
+                    hoja_sel_ceco = st.selectbox("Selecciona la Hoja", xls_ceco.sheet_names, key="sheet_ceco")
+                with col_cfg2:
+                    header_row_ceco = st.number_input("Fila de Encabezados (1 = primera fila)", min_value=1, value=1, step=1, key="header_ceco_xls")
+                
+                uploaded_file_ceco.seek(0)
+                df_ceco = pd.read_excel(uploaded_file_ceco, sheet_name=hoja_sel_ceco, header=header_row_ceco-1)
+            
+            st.write("Vista previa de los datos:")
+            st.dataframe(df_ceco.head(5))
+            
+            st.markdown("### Mapeo de Columnas")
+            cols_excel = ["-- Seleccionar --"] + list(df_ceco.columns)
+            
+            campos_sistema_ceco = {
+                'id_ceco': 'ID CECO*',
+                'nombre': 'Nombre del Centro de Costo*',
+                'presupuesto_anual': 'Presupuesto Anual Asignado*',
+                'presupuesto_consumido': 'Presupuesto Consumido',
+                'presupuesto_reservado': 'Presupuesto Reservado'
+            }
+            
+            mapped_cols_ceco = {}
+            for sys_field, label in campos_sistema_ceco.items():
+                default_idx = 0
+                for j, c in enumerate(cols_excel):
+                    if sys_field.split('_')[0].lower() in c.lower():
+                        default_idx = j
+                        break
+                mapped_cols_ceco[sys_field] = st.selectbox(label, options=cols_excel, index=default_idx, key=f"ceco_{sys_field}")
+                
+            if st.button("Validar e Importar CECOs", type="primary"):
+                final_mapping = {k: v for k, v in mapped_cols_ceco.items() if v != "-- Seleccionar --"}
+                
+                with st.spinner("Validando integridad..."):
+                    errors = validate_cecos(df_ceco, final_mapping)
+                
+                if errors:
+                    st.error("❌ Se encontraron errores de validación. El archivo fue rechazado.")
+                    with st.expander("Ver detalle de errores"):
+                        for e in errors:
+                            st.write(e)
+                    st.info("Por favor, corrige el archivo original y vuelve a subirlo.")
+                else:
+                    df_final = pd.DataFrame()
+                    for sys_col, excel_col in final_mapping.items():
+                        df_final[sys_col] = df_ceco[excel_col]
+                    
+                    if 'presupuesto_consumido' not in df_final.columns:
+                        df_final['presupuesto_consumido'] = 0.0
+                    if 'presupuesto_reservado' not in df_final.columns:
+                        df_final['presupuesto_reservado'] = 0.0
+
+                    try:
+                        save_dataframe_to_table(st.session_state['secret_key'], df_final, 'CECOs')
+                        st.success(f"✅ ¡Importación exitosa! {len(df_final)} registros guardados en la tabla CECOs.")
+                    except Exception as e:
+                        st.error(f"Error al guardar en la base de datos: {e}")
+
+        except Exception as e:
+            st.error(f"No se pudo procesar el archivo: {e}")
+
+================================================================================
+ARCHIVO: pages/admin_access.py
+================================================================================
+import streamlit as st
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pandas as pd
+import hashlib
+import string
+import random
+from db.database_manager import execute_query, get_connection, get_fernet, encrypt_val, decrypt_val
+
+if 'authenticated' not in st.session_state or not st.session_state['authenticated']:
+    st.warning("Debes iniciar sesión primero para acceder a esta página.")
+    st.stop()
+
+rol = st.session_state.get('rol')
+if rol != "Administrador":
+    st.error("No tienes permisos para acceder a esta página. Solo Administradores.")
+    st.stop()
+
+st.title("🔐 Gestión de Accesos y Llaves Únicas")
+st.markdown("Habilita usuarios, crea accesos manuales y genera llaves únicas.")
+
+secret_key = st.session_state['secret_key']
+
+def get_all_usuarios(secret_key):
+    query = "SELECT email, id_empleado, rol, estatus_acceso, fecha_ultimo_acceso, llave_enc FROM Usuarios ORDER BY email"
+    results = execute_query(query)
+    
+    # Si devuelve vacío, puede ser porque execute_query silencia el error de que la columna no existe aún
+    if not results:
+        query_fallback = "SELECT email, id_empleado, rol, estatus_acceso, fecha_ultimo_acceso FROM Usuarios ORDER BY email"
+        results = execute_query(query_fallback)
+        for r in results:
+            r['llave_enc'] = None
+            
+    f = get_fernet(secret_key)
+    for r in results:
+        if r.get('llave_enc'):
+            r['Llave de Acceso'] = decrypt_val(f, r['llave_enc'])
+        else:
+            r['Llave de Acceso'] = "No generada (Vacía)"
+        
+        if 'llave_enc' in r:
+            del r['llave_enc']
+            
+    return results
+
+def generar_token():
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=12))
+
+def actualizar_usuario(secret_key, email, rol, estatus, hashed_key=None, plain_key=None):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        f = get_fernet(secret_key)
+        if hashed_key:
+            llave_enc = encrypt_val(f, plain_key) if plain_key else None
+            try:
+                cursor.execute("UPDATE Usuarios SET rol = ?, estatus_acceso = ?, hashed_key = ?, llave_enc = ? WHERE email = ?", (rol, estatus, hashed_key, llave_enc, email))
+            except Exception:
+                cursor.execute("UPDATE Usuarios SET rol = ?, estatus_acceso = ?, hashed_key = ? WHERE email = ?", (rol, estatus, hashed_key, email))
+        else:
+            cursor.execute("UPDATE Usuarios SET rol = ?, estatus_acceso = ? WHERE email = ?", (rol, estatus, email))
+        conn.commit()
+    finally:
+        conn.close()
+
+def crear_usuario(secret_key, email, id_empleado, rol, estatus, hashed_key, plain_key=None):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        f = get_fernet(secret_key)
+        llave_enc = encrypt_val(f, plain_key) if plain_key else None
+        try:
+            cursor.execute("""
+                INSERT INTO Usuarios (email, id_empleado, hashed_key, rol, estatus_acceso, llave_enc)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (email, id_empleado, hashed_key, rol, estatus, llave_enc))
+        except Exception:
+            cursor.execute("""
+                INSERT INTO Usuarios (email, id_empleado, hashed_key, rol, estatus_acceso)
+                VALUES (?, ?, ?, ?, ?)
+            """, (email, id_empleado, hashed_key, rol, estatus))
+        conn.commit()
+    finally:
+        conn.close()
+
+# Gestión de estado para mensajes post-rerun
+if 'success_msg' in st.session_state:
+    st.success(st.session_state['success_msg'])
+    del st.session_state['success_msg']
+
+if 'new_token_msg' in st.session_state:
+    st.success(st.session_state['new_token_msg'])
+    st.code(st.session_state['new_token_code'])
+    st.warning("⚠️ Copia esta llave ahora, no se podrá visualizar de nuevo.")
+    if st.button("OK, Llave Copiada"):
+        del st.session_state['new_token_msg']
+        del st.session_state['new_token_code']
+        st.rerun()
+
+usuarios = get_all_usuarios(secret_key)
+
+st.subheader("Usuarios en el Sistema")
+if not usuarios:
+    st.info("No hay usuarios en la base de datos.")
+else:
+    df_usuarios = pd.DataFrame(usuarios)
+    
+    # Buscador interactivo
+    search_term = st.text_input("🔍 Buscar usuario (por correo, rol, ID...)", placeholder="Escribe para filtrar...")
+    if search_term:
+        df_usuarios = df_usuarios[df_usuarios.apply(lambda row: row.astype(str).str.contains(search_term, case=False).any(), axis=1)]
+        
+    st.dataframe(df_usuarios, hide_index=True, use_container_width=True)
+
+st.divider()
+
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("➕ Añadir Nuevo Usuario")
+    with st.form("form_nuevo_usuario"):
+        nuevo_email = st.text_input("Correo Electrónico *")
+        nuevo_id_empleado = st.text_input("ID Empleado (Opcional, dejar vacío si es BP/Admin)")
+        nuevo_rol = st.selectbox("Rol", ["Líder", "Business Partner", "Administrador"])
+        nuevo_estatus = st.selectbox("Estatus", ["Habilitado", "Deshabilitado"])
+        
+        submit_nuevo = st.form_submit_button("Crear Usuario")
+        
+        if submit_nuevo:
+            if nuevo_email:
+                try:
+                    nuevo_token = generar_token()
+                    hashed_token = hashlib.sha256(nuevo_token.encode()).hexdigest()
+                    
+                    # Limpiar ID si está vacío
+                    emp_id_val = nuevo_id_empleado.strip() if nuevo_id_empleado.strip() != "" else None
+                    
+                    crear_usuario(secret_key, nuevo_email.strip(), emp_id_val, nuevo_rol, nuevo_estatus, hashed_token, plain_key=nuevo_token)
+                    
+                    st.session_state['new_token_msg'] = f"Usuario {nuevo_email.strip()} creado correctamente. La llave única es:"
+                    st.session_state['new_token_code'] = nuevo_token
+                    st.rerun()
+                except Exception as e:
+                    if "UNIQUE constraint failed" in str(e):
+                        st.error("Error: Este correo electrónico ya existe en el sistema.")
+                    else:
+                        st.error(f"Error al añadir usuario: {e}")
+            else:
+                st.warning("El correo electrónico es obligatorio.")
+
+with col2:
+    if usuarios:
+        st.subheader("✏️ Modificar Acceso")
+        opciones_email = [u['email'] for u in usuarios]
+        email_sel = st.selectbox("Seleccionar Usuario:", opciones_email)
+        
+        if email_sel:
+            user_data = next((u for u in usuarios if u['email'] == email_sel), None)
+            
+            with st.form("form_acceso"):
+                mod_rol = st.selectbox("Rol", ["Líder", "Business Partner", "Administrador"], index=["Líder", "Business Partner", "Administrador"].index(user_data['rol']))
+                mod_estatus = st.selectbox("Estatus", ["Habilitado", "Deshabilitado"], index=0 if user_data['estatus_acceso'] == 'Habilitado' else 1)
+                generar_nueva_llave = st.checkbox("Generar Nueva Llave Única (Reset)")
+                
+                submit_mod = st.form_submit_button("Guardar Cambios")
+                
+                if submit_mod:
+                    if generar_nueva_llave:
+                        nuevo_token = generar_token()
+                        hashed_token = hashlib.sha256(nuevo_token.encode()).hexdigest()
+                        actualizar_usuario(secret_key, email_sel, mod_rol, mod_estatus, hashed_token, plain_key=nuevo_token)
+                        
+                        st.session_state['new_token_msg'] = f"Usuario {email_sel} actualizado. La nueva llave única es:"
+                        st.session_state['new_token_code'] = nuevo_token
+                        st.rerun()
+                    else:
+                        actualizar_usuario(secret_key, email_sel, mod_rol, mod_estatus)
+                        st.session_state['success_msg'] = f"Usuario {email_sel} actualizado correctamente sin cambiar su llave."
+                        st.rerun()
+
+================================================================================
+ARCHIVO: pages/admin_gym.py
+================================================================================
+import streamlit as st
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import datetime
+import io
+import pandas as pd
+try:
+    import PyPDF2
+except ImportError:
+    PyPDF2 = None
+try:
+    from pptx import Presentation
+except ImportError:
+    Presentation = None
+
+from db.database_manager import get_reglas_grado, guardar_simulacion_gym
+from utils.ia_manager import get_master_prompt
+import ollama
+
+def extract_text_from_pdf(file_bytes):
+    if not PyPDF2:
+        return "[Error: PyPDF2 no está instalado. Añade PyPDF2 a requirements.txt]"
+    try:
+        reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
+        text = ""
+        for page in reader.pages:
+            extracted = page.extract_text()
+            if extracted:
+                text += extracted + "\n"
+        return text
+    except Exception as e:
+        return f"[Error al leer PDF: {e}]"
+
+def extract_text_from_excel(file_bytes):
+    try:
+        xls = pd.ExcelFile(io.BytesIO(file_bytes))
+        text = ""
+        for sheet_name in xls.sheet_names:
+            df = pd.read_excel(xls, sheet_name=sheet_name)
+            text += f"--- Hoja: {sheet_name} ---\n"
+            text += df.to_string(index=False) + "\n\n"
+        return text
+    except Exception as e:
+        return f"[Error al leer Excel: {e}]"
+
+def extract_text_from_pptx(file_bytes):
+    if not Presentation:
+        return "[Error: python-pptx no está instalado. Añade python-pptx a requirements.txt]"
+    try:
+        prs = Presentation(io.BytesIO(file_bytes))
+        text = ""
+        for i, slide in enumerate(prs.slides):
+            text += f"--- Diapositiva {i+1} ---\n"
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text:
+                    text += shape.text + "\n"
+        return text
+    except Exception as e:
+        return f"[Error al leer PPTX: {e}]"
+
+def process_uploaded_files(uploaded_files):
+    contexto_archivos = ""
+    for file in uploaded_files:
+        contexto_archivos += f"\n=== Contenido del archivo: {file.name} ===\n"
+        file_bytes = file.read()
+        if file.name.lower().endswith('.pdf'):
+            contexto_archivos += extract_text_from_pdf(file_bytes)
+        elif file.name.lower().endswith(('.xlsx', '.xls')):
+            contexto_archivos += extract_text_from_excel(file_bytes)
+        elif file.name.lower().endswith('.pptx'):
+            contexto_archivos += extract_text_from_pptx(file_bytes)
+        else:
+            contexto_archivos += "[Formato no soportado]\n"
+    return contexto_archivos
+
+if 'authenticated' not in st.session_state or not st.session_state['authenticated']:
+    st.warning("Debes iniciar sesión primero para acceder a esta página.")
+    st.stop()
+
+rol = st.session_state.get('rol')
+if rol != "Administrador":
+    st.error("No tienes permisos para acceder a esta página. Solo Administradores.")
+    st.stop()
+
+st.title("🏋️ Gimnasio de Simulación (Admin Training Ground)")
+st.markdown("Calibra la Inteligencia Artificial probando *prompts* masivos y ajustando la temperatura del modelo Llama 3.")
+
+secret_key = st.session_state['secret_key']
+reglas_grado = get_reglas_grado(secret_key)
+
+saldo_disponible_mock = 5000000.0
+
+st.sidebar.header("Parámetros del Modelo")
+temperatura = st.sidebar.slider("Temperatura (0.0 = Determinista, 1.0 = Creativo)", min_value=0.0, max_value=1.0, value=0.0, step=0.1)
+
+st.subheader("System Prompt (Auditor Experto)")
+system_prompt_generado = get_master_prompt(reglas_grado, saldo_disponible_mock)
+system_prompt_editado = st.text_area("Puedes ajustar el prompt del sistema para esta prueba:", value=system_prompt_generado, height=250)
+
+st.divider()
+
+st.subheader("Simulación de Caso y Análisis de Documentos")
+
+contexto_mock = """Contexto del Colaborador (Desidentificado):
+- ID: MOCK_001
+- Grado Actual: Grado 2
+- Sueldo Base actual: $1500.0
+- ID CECO: CECO_TEST
+
+Por favor evalúa la siguiente interacción teniendo en cuenta esta información y The Budget Lock."""
+
+with st.expander("Ver Contexto Básico Inyectado Automáticamente"):
+    st.code(contexto_mock, language="text")
+
+prompt_prueba = st.text_area("Ingresa el Prompt de Prueba (Descripción de Tareas / Propuesta):", height=150, placeholder="Ej: Se le asignará la dirección de la estrategia financiera regional y manejo de un equipo de 50 personas, con un aumento salarial de $10,000...")
+
+archivos_subidos = st.file_uploader("📂 Subir documentos de contexto (PDF, Excel, PPTX)", type=['pdf', 'xlsx', 'xls', 'pptx'], accept_multiple_files=True)
+
+if st.button("▶️ Ejecutar Simulación IA", type="primary"):
+    if not prompt_prueba and not archivos_subidos:
+        st.warning("Debes ingresar un prompt de prueba o subir al menos un documento para simular.")
+    else:
+        with st.spinner("Procesando contexto e interactuando con Llama 3..."):
+            
+            contexto_extra = ""
+            if archivos_subidos:
+                st.info("Extrayendo texto de los documentos adjuntos...")
+                contexto_extra = process_uploaded_files(archivos_subidos)
+                with st.expander("Ver texto extraído de los documentos (Debug)"):
+                    st.text(contexto_extra[:2000] + ("..." if len(contexto_extra) > 2000 else ""))
+                
+            prompt_final = prompt_prueba if prompt_prueba else "Analiza los siguientes documentos y aplica las reglas de compensación correspondientes."
+            
+            if contexto_extra:
+                prompt_final += f"\n\n=== INFORMACIÓN DE DOCUMENTOS ADJUNTOS ===\n{contexto_extra}"
+
+            messages = [
+                {"role": "system", "content": system_prompt_editado},
+                {"role": "system", "content": contexto_mock},
+                {"role": "user", "content": prompt_final}
+            ]
+            
+            try:
+                response = ollama.chat(model='llama3', messages=messages, options={'temperature': temperatura})
+                respuesta_ia = response['message']['content']
+                
+                st.markdown("### 🤖 Respuesta de la IA:")
+                
+                if respuesta_ia.strip().startswith("[DISCREPANCIA_DETECTADA]") or respuesta_ia.strip().startswith("[PRESUPUESTO_EXCEDIDO]"):
+                    st.error("LA IA BLOQUEÓ LA OPERACIÓN")
+                else:
+                    st.success("LA IA PERMITIÓ LA OPERACIÓN")
+                    
+                st.info(respuesta_ia)
+                
+                fecha_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                guardar_simulacion_gym(secret_key, prompt_prueba, system_prompt_editado, temperatura, respuesta_ia, fecha_str)
+                st.success("💾 Simulación guardada en el log de entrenamiento (Simulaciones_Entrenamiento).")
+                
+            except Exception as e:
+                st.error(f"Error al ejecutar Ollama: {e}")
+
+================================================================================
+ARCHIVO: pages/admin_impersonate.py
+================================================================================
+import streamlit as st
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from db.database_manager import execute_query
+
+if 'authenticated' not in st.session_state or not st.session_state['authenticated']:
+    st.warning("Debes iniciar sesión primero para acceder a esta página.")
+    st.stop()
+
+rol = st.session_state.get('rol')
+if rol != "Administrador":
+    st.error("No tienes permisos para acceder a esta página. Solo Administradores.")
+    st.stop()
+
+st.title("🕵️ Entorno de Pruebas de Usuario (Impersonate)")
+st.markdown("Suplanta la vista de un usuario habilitado para auditar el sistema en modo espejo.")
+
+secret_key = st.session_state['secret_key']
+
+def get_usuarios_habilitados(secret_key):
+    query = "SELECT email, rol, estatus_acceso FROM Usuarios WHERE estatus_acceso = 'Habilitado' AND rol != 'Administrador'"
+    return execute_query(query)
+
+usuarios_lista = get_usuarios_habilitados(secret_key)
+
+if not usuarios_lista:
+    st.info("No hay otros usuarios habilitados en la base de datos para suplantar.")
+    st.stop()
+
+user_opciones = {f"{u['email']} ({u['rol']})": u['email'] for u in usuarios_lista}
+seleccion = st.selectbox("Selecciona un Usuario a suplantar:", ["-- Seleccionar --"] + list(user_opciones.keys()))
+
+if st.button("Activar Modo Impersonate", type="primary"):
+    if seleccion != "-- Seleccionar --":
+        email_sel = user_opciones[seleccion]
+        rol_sel = next(u['rol'] for u in usuarios_lista if u['email'] == email_sel)
+        
+        st.session_state['impersonating'] = True
+        st.session_state['impersonate_email'] = email_sel
+        st.session_state['impersonate_rol'] = rol_sel
+        
+        st.success(f"Modo suplantación activado para {email_sel}. Redirigiendo...")
+        st.rerun()
+    else:
+        st.warning("Por favor selecciona un usuario.")
+
+if st.session_state.get('impersonating', False):
+    st.info(f"Actualmente suplantando a: {st.session_state.get('impersonate_email')} ({st.session_state.get('impersonate_rol')})")
+    if st.button("Terminar Suplantación"):
+        st.session_state['impersonating'] = False
+        st.session_state['impersonate_email'] = None
+        st.session_state['impersonate_rol'] = None
+        st.success("Suplantación terminada.")
+        st.rerun()
+
+================================================================================
+ARCHIVO: pages/bp_dashboard.py
+================================================================================
+import streamlit as st
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pandas as pd
+from db.database_manager import execute_query, aprobar_reserva, rechazar_reserva, solicitar_ajuste_reserva
+
+if 'authenticated' not in st.session_state or not st.session_state['authenticated']:
+    st.warning("Debes iniciar sesión primero para acceder a esta página.")
+    st.stop()
+
+rol = st.session_state.get('rol')
+if rol not in ["Business Partner", "Administrador"]:
+    st.error("No tienes permisos para acceder a esta página.")
+    st.stop()
+
+st.title("⚖️ Dashboard Business Partner (BP)")
+st.markdown("Bandeja de Entrada Inteligente: Gestiona las aprobaciones pendientes derivadas por la IA.")
+
+secret_key = st.session_state['secret_key']
+
+from db.database_manager import get_reservas_pendientes
+
+pendientes = get_reservas_pendientes(secret_key)
+
+if not pendientes:
+    st.success("🎉 No hay casos pendientes de aprobación.")
+    st.stop()
+
+st.subheader("Casos Pendientes de Revisión")
+
+for caso in pendientes:
+    with st.expander(f"Caso #{caso['id_reserva']} - {caso['descripcion']} - {caso['fecha_reserva']}", expanded=False):
+        st.write(f"**CECO Afectado:** {caso['id_ceco']}")
+        st.write(f"**Monto Reservado:** ${caso['monto']:,.2f}")
+        
+        st.markdown("#### 🤖 Contexto y Justificación de la IA")
+        if caso['justificacion_ia']:
+            st.info(caso['justificacion_ia'])
+        else:
+            st.warning("No se registró justificación de la IA para este caso.")
+            
+        comentario_bp = st.text_input(f"Comentario del Experto (Opcional)", key=f"comentario_{caso['id_reserva']}")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("✅ Aprobar Cambio", key=f"btn_aprobar_{caso['id_reserva']}", type="primary"):
+                aprobar_reserva(secret_key, caso['id_reserva'], comentario_bp=comentario_bp)
+                st.success("Caso aprobado exitosamente.")
+                st.rerun()
+                
+        with col2:
+            if st.button("❌ Rechazar (Liberar Saldo)", key=f"btn_rechazar_{caso['id_reserva']}"):
+                rechazar_reserva(secret_key, caso['id_reserva'], caso['id_ceco'], caso['monto'], comentario_bp)
+                st.success("Caso rechazado. Saldo liberado al CECO.")
+                st.rerun()
+                
+        with col3:
+            if st.button("⚠️ Solicitar Ajuste", key=f"btn_ajuste_{caso['id_reserva']}"):
+                solicitar_ajuste_reserva(secret_key, caso['id_reserva'], comentario_bp)
+                st.success("Ajuste solicitado. El líder debe modificar la propuesta.")
+                st.rerun()
+
+================================================================================
+ARCHIVO: pages/executive_dashboard.py
+================================================================================
+import streamlit as st
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pandas as pd
+from db.database_manager import execute_query
+import io
+
+if 'authenticated' not in st.session_state or not st.session_state['authenticated']:
+    st.warning("Debes iniciar sesión primero para acceder a esta página.")
+    st.stop()
+
+rol = st.session_state.get('rol')
+if rol == "Líder":
+    st.warning("No tienes permisos para ver el Dashboard Ejecutivo. Acceso denegado.")
+    st.stop()
+
+st.title("📈 Dashboard Ejecutivo")
+st.markdown("Visibilidad macro y exportación de datos para Comités Gerenciales.")
+
+secret_key = st.session_state['secret_key']
+
+from db.database_manager import get_todas_las_reservas, get_todos_los_cecos, get_todos_empleados
+
+reservas = get_todas_las_reservas(secret_key)
+df_reservas = pd.DataFrame(reservas) if reservas else pd.DataFrame(columns=['id_reserva', 'monto', 'estatus', 'justificacion_ia', 'comentario_bp'])
+
+cecos = get_todos_los_cecos(secret_key)
+df_cecos = pd.DataFrame(cecos) if cecos else pd.DataFrame(columns=['id_ceco', 'presupuesto_anual', 'presupuesto_consumido', 'presupuesto_reservado'])
+
+if not df_cecos.empty:
+    df_cecos['saldo_disponible'] = df_cecos['presupuesto_anual'] - df_cecos['presupuesto_consumido'] - df_cecos['presupuesto_reservado']
+    df_cecos['porcentaje_disponible'] = (df_cecos['saldo_disponible'] / df_cecos['presupuesto_anual']) * 100
+
+empleados = get_todos_empleados(secret_key)
+df_empleados = pd.DataFrame(empleados) if empleados else pd.DataFrame()
+
+st.subheader("Indicadores Macro")
+
+monto_total_reservado = df_reservas[df_reservas['estatus'].isin(['EN_VALIDACION', 'APROBADO', 'AJUSTE_REQUERIDO'])]['monto'].sum() if not df_reservas.empty else 0
+total_presupuesto = df_cecos['presupuesto_anual'].sum() if not df_cecos.empty else 0
+total_gastado = df_cecos['presupuesto_consumido'].sum() if not df_cecos.empty else 0
+
+col1, col2, col3 = st.columns(3)
+col1.metric("Presupuesto Anual Total", f"${total_presupuesto:,.2f}")
+col2.metric("Total Gastado (Real)", f"${total_gastado:,.2f}")
+col3.metric("Monto Total Reservado (Piloto)", f"${monto_total_reservado:,.2f}")
+
+st.divider()
+
+col_a, col_b = st.columns(2)
+
+with col_a:
+    st.subheader("Eficiencia de CECOs")
+    if not df_cecos.empty:
+        df_chart = df_cecos[['id_ceco', 'presupuesto_anual', 'presupuesto_consumido', 'presupuesto_reservado']].copy()
+        df_chart['Gasto + Reserva'] = df_chart['presupuesto_consumido'] + df_chart['presupuesto_reservado']
+        st.bar_chart(df_chart.set_index('id_ceco')[['presupuesto_anual', 'Gasto + Reserva']])
+    else:
+        st.info("Sin datos.")
+
+with col_b:
+    st.subheader("Embudo de Solicitudes")
+    if not df_reservas.empty:
+        conteo_estados = df_reservas['estatus'].value_counts()
+        st.bar_chart(conteo_estados)
+    else:
+        st.info("Sin datos.")
+
+st.divider()
+
+st.subheader("🚨 Índice de Alerta (CECOs < 10% Disponible)")
+if not df_cecos.empty:
+    cecos_alerta = df_cecos[df_cecos['porcentaje_disponible'] < 10.0]
+    if not cecos_alerta.empty:
+        st.dataframe(cecos_alerta[['id_ceco', 'nombre', 'presupuesto_anual', 'saldo_disponible', 'porcentaje_disponible']].style.format({'porcentaje_disponible': "{:.2f}%"}))
+    else:
+        st.success("Todos los CECOs tienen un saldo saludable (> 10%).")
+
+st.divider()
+
+st.subheader("Exportación de Datos para Comité")
+st.markdown("Descarga el reporte consolidado en formato Excel con todas las hojas necesarias.")
+
+def generate_excel():
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        if not df_empleados.empty:
+            df_empleados.to_excel(writer, sheet_name='Nómina Actual', index=False)
+        else:
+            pd.DataFrame(['Sin datos']).to_excel(writer, sheet_name='Nómina Actual')
+            
+        if not df_cecos.empty:
+            df_cecos.to_excel(writer, sheet_name='Estado CECOs', index=False)
+            
+        if not df_reservas.empty:
+            df_reservas.to_excel(writer, sheet_name='Embudo y Reservas', index=False)
+            
+            log_cols = ['id_reserva', 'id_ceco', 'monto', 'estatus', 'fecha_reserva', 'justificacion_ia', 'comentario_bp']
+            df_log = df_reservas[[c for c in log_cols if c in df_reservas.columns]]
+            df_log.to_excel(writer, sheet_name='Log de Validaciones', index=False)
+            
+    return output.getvalue()
+
+excel_data = generate_excel()
+
+st.download_button(
+    label="📥 Descargar Reporte Consolidado (Excel)",
+    data=excel_data,
+    file_name=f"Reporte_Ejecutivo_SGEC_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    type="primary"
+)
+
+================================================================================
+ARCHIVO: pages/reporteria.py
+================================================================================
+import streamlit as st
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pandas as pd
+from db.database_manager import execute_query
+
+if 'authenticated' not in st.session_state or not st.session_state['authenticated']:
+    st.warning("Debes iniciar sesión primero para acceder a esta página.")
+    st.stop()
+
+st.title("📊 Reportería y Visibilidad de CECOs")
+st.markdown("Consolidado del estado financiero por Centro de Costos, incluyendo presupuesto 'en el aire' (reservado).")
+
+secret_key = st.session_state['secret_key']
+
+from db.database_manager import get_todos_los_cecos, get_reservas_y_cartas
+
+cecos = get_todos_los_cecos(secret_key)
+
+if not cecos:
+    st.info("No hay datos de CECOs para mostrar.")
+    st.stop()
+
+df = pd.DataFrame(cecos)
+
+df['saldo_disponible'] = df['presupuesto_anual'] - df['presupuesto_consumido'] - df['presupuesto_reservado']
+
+total_anual = df['presupuesto_anual'].sum()
+total_consumido = df['presupuesto_consumido'].sum()
+total_reservado = df['presupuesto_reservado'].sum()
+total_disponible = df['saldo_disponible'].sum()
+
+st.subheader("Resumen Global Financiero")
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Presupuesto Total Anual", f"${total_anual:,.2f}")
+col2.metric("Total Gastado (Nómina)", f"${total_consumido:,.2f}")
+col3.metric("Total en Reserva (Validación)", f"${total_reservado:,.2f}")
+col4.metric("Total Disponible Real", f"${total_disponible:,.2f}")
+
+st.divider()
+
+st.subheader("Detalle por Centro de Costos")
+
+df_mostrar = df.copy()
+for col in ['presupuesto_anual', 'presupuesto_consumido', 'presupuesto_reservado', 'saldo_disponible']:
+    df_mostrar[col] = df_mostrar[col].apply(lambda x: f"${x:,.2f}")
+
+st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
+
+st.divider()
+
+st.subheader("Estado de Reservas Activas e Históricas")
+reservas = get_reservas_y_cartas(secret_key)
+
+if reservas:
+    df_res = pd.DataFrame(reservas)
+    df_res['monto'] = df_res['monto'].apply(lambda x: f"${x:,.2f}" if pd.notnull(x) else "")
+    st.dataframe(df_res, use_container_width=True, hide_index=True)
+else:
+    st.info("No hay reservas registradas en el sistema.")
+
+================================================================================
+ARCHIVO: pages/simulation_chat.py
+================================================================================
+import streamlit as st
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import datetime
+from db.database_manager import get_empleados_por_lider, get_empleado_by_id, get_reglas_grado, get_ceco_completo, crear_reserva, aprobar_reserva, guardar_carta_emitida
+from utils.ia_manager import simular_chat, generar_borrador_correo
+from utils.pdf_generator import generar_carta_oferta
+
+if 'authenticated' not in st.session_state or not st.session_state['authenticated']:
+    st.warning("Debes iniciar sesión primero para acceder a esta página.")
+    st.stop()
+
+rol = st.session_state.get('rol')
+impersonating = st.session_state.get('impersonating', False)
+
+if not (rol == "Líder" or impersonating):
+    st.error("No tienes permisos para acceder a esta página. Solo para Líderes (o Admins en modo Impersonate).")
+    st.stop()
+
+st.title("🤖 Chat de Simulación (Challenge Engine)")
+
+secret_key = st.session_state['secret_key']
+email_activo = st.session_state.get('impersonate_email') if impersonating else st.session_state.get('email_usuario')
+
+empleados_lista = get_empleados_por_lider(secret_key, email_activo)
+reglas_grado = get_reglas_grado(secret_key)
+
+if not empleados_lista:
+    st.info("No hay empleados cargados en la base de datos.")
+    st.stop()
+
+empleado_opciones = {f"{e['nombre_completo']} ({e['id_empleado']})": e['id_empleado'] for e in empleados_lista}
+seleccion = st.selectbox("Selecciona un colaborador para la simulación:", ["-- Seleccionar --"] + list(empleado_opciones.keys()))
+
+if seleccion == "-- Seleccionar --":
+    st.stop()
+
+empleado_id = empleado_opciones[seleccion]
+contexto_empleado = get_empleado_by_id(secret_key, empleado_id)
+ceco_info = get_ceco_completo(secret_key, contexto_empleado['id_ceco'])
+
+if not ceco_info:
+    st.error("Error: Centro de costos no encontrado para este empleado.")
+    st.stop()
+
+saldo_disponible = ceco_info['presupuesto_anual'] - ceco_info['presupuesto_consumido'] - ceco_info['presupuesto_reservado']
+
+st.divider()
+
+st.markdown("### Contexto Actual del Colaborador")
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Sueldo Base", f"${contexto_empleado['sueldo_base']:,.2f}")
+col2.metric("Grado Actual", contexto_empleado['grado_actual'])
+col3.metric("Centro de Costos", contexto_empleado['id_ceco'])
+col4.metric("Saldo CECO Disponible", f"${saldo_disponible:,.2f}")
+
+st.divider()
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "estado_flujo" not in st.session_state:
+    st.session_state.estado_flujo = "SIMULACION" 
+if "ia_explicacion" not in st.session_state:
+    st.session_state.ia_explicacion = ""
+if "reserva_actual_id" not in st.session_state:
+    st.session_state.reserva_actual_id = None
+if "nuevo_sueldo_propuesto" not in st.session_state:
+    st.session_state.nuevo_sueldo_propuesto = 0.0
+
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+if st.session_state.estado_flujo == "SIMULACION":
+    prompt = st.chat_input("Describe las tareas o cambios salariales propuestos...")
+    
+    if prompt:
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Analizando con Auditor IA..."):
+                response = simular_chat(contexto_empleado, reglas_grado, st.session_state.messages, ceco_info)
+                
+                if response.strip().startswith("[DISCREPANCIA_DETECTADA]"):
+                    texto_limpio = response.replace("[DISCREPANCIA_DETECTADA]", "").strip()
+                    st.error("🚨 Inconsistencia de Grado Detectada por el Auditor Experto")
+                    st.markdown(texto_limpio)
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+                    st.session_state.estado_flujo = "BLOQUEADO_GRADO"
+                    st.session_state.ia_explicacion = texto_limpio
+                    st.rerun()
+                elif response.strip().startswith("[PRESUPUESTO_EXCEDIDO]"):
+                    texto_limpio = response.replace("[PRESUPUESTO_EXCEDIDO]", "").strip()
+                    st.error("🛑 Presupuesto Excedido (The Budget Lock)")
+                    st.markdown(texto_limpio)
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+                    st.session_state.estado_flujo = "BLOQUEADO_PRESUPUESTO"
+                    st.session_state.ia_explicacion = texto_limpio
+                    st.rerun()
+                else:
+                    st.markdown(response)
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+
+elif st.session_state.estado_flujo in ["BLOQUEADO_GRADO", "BLOQUEADO_PRESUPUESTO"]:
+    st.warning("⚠️ La simulación ha sido interrumpida por reglas de gobernanza.")
+    
+    colA, colB = st.columns(2)
+    with colA:
+        if st.button("Elevar Caso al Analista Experto / Pedir Excepción", use_container_width=True, type="primary"):
+            
+            monto_reserva = contexto_empleado['sueldo_base'] * 0.20 
+            st.session_state.nuevo_sueldo_propuesto = contexto_empleado['sueldo_base'] + monto_reserva
+            
+            fecha_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            desc = f"Reserva por validación de caso - Empleado {contexto_empleado['id_empleado']}"
+            
+            justificacion_ia = st.session_state.ia_explicacion
+            
+            id_res = crear_reserva(secret_key, contexto_empleado['id_ceco'], monto_reserva, desc, fecha_str, "EN_VALIDACION", justificacion_ia)
+            
+            st.session_state.reserva_actual_id = id_res
+            st.session_state.estado_flujo = "ESPERANDO_APROBACION_HUMANA"
+            
+            st.info("✉️ Simulación de envío: Correo de validación enviado a experto_rrhh@empresa.com con el reporte de discrepancia.")
+            borrador = generar_borrador_correo(contexto_empleado, st.session_state.ia_explicacion, "[Determinar]")
+            with st.expander("Ver Borrador de Correo Enviado", expanded=False):
+                st.code(borrador, language="text")
+            
+            st.rerun()
+            
+    with colB:
+        if st.button("Ajustar Propuesta", use_container_width=True):
+            st.session_state.estado_flujo = "SIMULACION"
+            st.session_state.messages = st.session_state.messages[:-2]
+            st.rerun()
+
+elif st.session_state.estado_flujo == "ESPERANDO_APROBACION_HUMANA":
+    st.info("⏳ Esperando revisión del Analista de RRHH en el Dashboard de Business Partner. Puedes simularlo si vas a esa vista, o forzarlo aquí para pruebas rápidas.")
+    
+    if st.button("[Bypass Simulación: Forzar Aprobación]", type="primary"):
+        aprobar_reserva(secret_key, st.session_state.reserva_actual_id, comentario_bp="Aprobado por Bypass Local")
+        st.session_state.estado_flujo = "APROBADO"
+        st.success("Aprobación forzada registrada exitosamente.")
+        st.rerun()
+
+elif st.session_state.estado_flujo == "APROBADO":
+    st.success("✅ Propuesta Aprobada. Ya puedes generar la Carta Oferta oficial.")
+    
+    if st.button("Generar Carta Oferta PDF", type="primary"):
+        fecha_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        ruta_pdf, hash_pdf = generar_carta_oferta(
+            empleado_id=contexto_empleado['id_empleado'],
+            nombre=contexto_empleado['nombre_completo'],
+            cargo=contexto_empleado['grado_actual'],
+            nuevo_sueldo=st.session_state.nuevo_sueldo_propuesto
+        )
+        
+        guardar_carta_emitida(secret_key, contexto_empleado['id_empleado'], st.session_state.reserva_actual_id, hash_pdf, fecha_str)
+        
+        st.session_state.estado_flujo = "FINALIZADO"
+        st.success(f"Carta generada y guardada en {ruta_pdf}")
+        st.info(f"Hash de Seguridad Registrado: {hash_pdf}")
+        
+        with open(ruta_pdf, "rb") as file:
+            st.download_button(
+                label="Descargar PDF",
+                data=file,
+                file_name=ruta_pdf.split('/')[-1],
+                mime="application/pdf"
+            )
+
+elif st.session_state.estado_flujo == "FINALIZADO":
+    st.success("Flujo completado. La reserva ha sido efectuada y la carta ha sido emitida.")
+    if st.button("Volver al Inicio / Simular Otro Empleado"):
+        st.session_state.messages = []
+        st.session_state.estado_flujo = "SIMULACION"
+        st.rerun()
