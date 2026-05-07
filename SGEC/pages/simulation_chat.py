@@ -6,6 +6,10 @@ import datetime
 from db.database_manager import get_empleados_por_lider, get_empleado_by_id, get_reglas_grado, get_ceco_completo, crear_reserva, aprobar_reserva, guardar_carta_emitida
 from utils.ia_manager import simular_chat, generar_borrador_correo
 from utils.pdf_generator import generar_carta_oferta
+from utils.navigation import render_sidebar
+
+render_sidebar()
+
 if 'authenticated' not in st.session_state or not st.session_state['authenticated']:
     st.warning("Debes iniciar sesión primero para acceder a esta página.")
     st.stop()

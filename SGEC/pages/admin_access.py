@@ -7,6 +7,10 @@ import hashlib
 import string
 import random
 from db.database_manager import execute_query, get_connection, get_fernet, encrypt_val, decrypt_val
+from utils.navigation import render_sidebar
+
+render_sidebar()
+
 if 'authenticated' not in st.session_state or not st.session_state['authenticated']:
     st.warning("Debes iniciar sesión primero para acceder a esta página.")
     st.stop()

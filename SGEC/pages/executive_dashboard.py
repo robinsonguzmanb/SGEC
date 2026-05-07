@@ -5,6 +5,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 from db.database_manager import execute_query
 import io
+from utils.navigation import render_sidebar
+
+render_sidebar()
+
 if 'authenticated' not in st.session_state or not st.session_state['authenticated']:
     st.warning("Debes iniciar sesión primero para acceder a esta página.")
     st.stop()
