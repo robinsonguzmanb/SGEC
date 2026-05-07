@@ -49,16 +49,28 @@ saldo_disponible = ceco_info['presupuesto_anual'] - ceco_info['presupuesto_consu
 def get_estadisticas(secret_key, grado, ceco_emp):
     from db.database_manager import execute_query, get_fernet, decrypt_val
     f = get_fernet(secret_key)
-    res = execute_query("SELECT id_ceco, sueldo_base FROM Empleados WHERE grado_actual = ?", (grado,))
+
+    # Hay que desencriptar el grado en la base para comparar, o encriptar el grado buscado (si el grado está encriptado)
+    # Sin embargo, en _decrypt_empleado_row, grado_actual es desencriptado.
+    # Así que para buscar en DB tenemos que hacer un fetchall y buscar a nivel aplicación,
+    # o bien encriptar el grado (pero en AES/Fernet no es determinista a menos que se fije el IV).
+    # Como la BD es local y pequeña (SQLite), extraemos todos y filtramos en python:
+
+    res = execute_query("SELECT id_ceco, grado_actual, renta_anual FROM Empleados")
     s_mismo, s_otros = [], []
     for r in res:
         try:
-            s = float(decrypt_val(f, r['sueldo_base']))
-            if r['id_ceco'] == ceco_emp:
-                s_mismo.append(s)
-            else:
-                s_otros.append(s)
-        except: pass
+            r_grado = decrypt_val(f, r['grado_actual'])
+            if str(r_grado).strip() == str(grado).strip():
+                # En lugar de sueldo_base, ahora utilizamos renta_anual
+                s = float(decrypt_val(f, r['renta_anual']))
+                if r['id_ceco'] == ceco_emp:
+                    s_mismo.append(s)
+                else:
+                    s_otros.append(s)
+        except Exception as e:
+            pass
+
     p_mismo = sum(s_mismo)/len(s_mismo) if s_mismo else 0
     p_otros = sum(s_otros)/len(s_otros) if s_otros else 0
     return p_mismo, p_otros, len(s_mismo), len(s_otros)
@@ -83,7 +95,7 @@ with col_data:
     c1.metric("Grado Actual", contexto_empleado.get('grado_actual', 'N/A'))
     c2.metric("Centro de Costos", contexto_empleado.get('id_ceco', 'N/A'))
     c2.metric("Saldo CECO Disponible", f"${saldo_disponible:,.2f}")
-    
+
     if campos_extra:
         st.markdown("**Datos Complementarios:**")
         for campo in campos_extra:
@@ -99,22 +111,22 @@ with col_data:
 
 with col_stats:
     st.markdown(f"#### 📊 Equidad Interna (Grado {contexto_empleado.get('grado_actual', 'N/A')})")
-    
-    sueldo_actual = contexto_empleado.get('sueldo_base', 0)
-    delta_mismo = sueldo_actual - prom_mismo if prom_mismo > 0 else 0
-    delta_otros = sueldo_actual - prom_otros if prom_otros > 0 else 0
-    
+
+    renta_actual = float(contexto_empleado.get('renta_anual', 0)) if contexto_empleado.get('renta_anual') is not None else 0.0
+    delta_mismo = renta_actual - prom_mismo if prom_mismo > 0 else 0.0
+    delta_otros = renta_actual - prom_otros if prom_otros > 0 else 0.0
+
     c3, c4 = st.columns(2)
-    c3.metric(f"Promedio Mismo Equipo (n={n_mismo})", f"${prom_mismo:,.2f}", f"{delta_mismo:,.2f} vs Actual", delta_color="inverse")
-    c4.metric(f"Promedio Otros Equipos (n={n_otros})", f"${prom_otros:,.2f}", f"{delta_otros:,.2f} vs Actual", delta_color="inverse")
-    
-    st.caption("Comparativa de sueldo base contra colaboradores en el mismo grado/GGS.")
+    c3.metric(f"Renta Promedio Equipo (n={n_mismo})", f"${prom_mismo:,.2f}", f"{delta_mismo:,.2f} vs Actual", delta_color="inverse")
+    c4.metric(f"Renta Promedio Externa (n={n_otros})", f"${prom_otros:,.2f}", f"{delta_otros:,.2f} vs Actual", delta_color="inverse")
+
+    st.caption("Comparativa de Renta Anual contra colaboradores en el mismo grado/GGS.")
 
 st.divider()
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "estado_flujo" not in st.session_state:
-    st.session_state.estado_flujo = "SIMULACION" 
+    st.session_state.estado_flujo = "SIMULACION"
 if "ia_explicacion" not in st.session_state:
     st.session_state.ia_explicacion = ""
 if "reserva_actual_id" not in st.session_state:
@@ -126,7 +138,7 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 if st.session_state.estado_flujo == "SIMULACION":
     prompt = st.chat_input("Describe las tareas o cambios salariales propuestos...")
-    
+
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
@@ -134,7 +146,7 @@ if st.session_state.estado_flujo == "SIMULACION":
         with st.chat_message("assistant"):
             with st.spinner("Analizando con Auditor IA..."):
                 response = simular_chat(contexto_empleado, reglas_grado, st.session_state.messages, ceco_info)
-                
+
                 if response.strip().startswith("[DISCREPANCIA_DETECTADA]"):
                     texto_limpio = response.replace("[DISCREPANCIA_DETECTADA]", "").strip()
                     st.error("🚨 Inconsistencia de Grado Detectada por el Auditor Experto")
@@ -156,31 +168,31 @@ if st.session_state.estado_flujo == "SIMULACION":
                     st.session_state.messages.append({"role": "assistant", "content": response})
 elif st.session_state.estado_flujo in ["BLOQUEADO_GRADO", "BLOQUEADO_PRESUPUESTO"]:
     st.warning("⚠️ La simulación ha sido interrumpida por reglas de gobernanza.")
-    
+
     colA, colB = st.columns(2)
     with colA:
         if st.button("Elevar Caso al Analista Experto / Pedir Excepción", width='stretch', type="primary"):
-            
-            monto_reserva = contexto_empleado['sueldo_base'] * 0.20 
+
+            monto_reserva = contexto_empleado['sueldo_base'] * 0.20
             st.session_state.nuevo_sueldo_propuesto = contexto_empleado['sueldo_base'] + monto_reserva
-            
+
             fecha_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             desc = f"Reserva por validación de caso - Empleado {contexto_empleado['id_empleado']}"
-            
+
             justificacion_ia = st.session_state.ia_explicacion
-            
+
             id_res = crear_reserva(secret_key, contexto_empleado['id_ceco'], monto_reserva, desc, fecha_str, "EN_VALIDACION", justificacion_ia)
-            
+
             st.session_state.reserva_actual_id = id_res
             st.session_state.estado_flujo = "ESPERANDO_APROBACION_HUMANA"
-            
+
             st.info("✉️ Simulación de envío: Correo de validación enviado a experto_rrhh@empresa.com con el reporte de discrepancia.")
             borrador = generar_borrador_correo(contexto_empleado, st.session_state.ia_explicacion, "[Determinar]")
             with st.expander("Ver Borrador de Correo Enviado", expanded=False):
                 st.code(borrador, language="text")
-            
+
             st.rerun()
-            
+
     with colB:
         if st.button("Ajustar Propuesta", width='stretch'):
             st.session_state.estado_flujo = "SIMULACION"
@@ -188,7 +200,7 @@ elif st.session_state.estado_flujo in ["BLOQUEADO_GRADO", "BLOQUEADO_PRESUPUESTO
             st.rerun()
 elif st.session_state.estado_flujo == "ESPERANDO_APROBACION_HUMANA":
     st.info("⏳ Esperando revisión del Analista de RRHH en el Dashboard de Business Partner. Puedes simularlo si vas a esa vista, o forzarlo aquí para pruebas rápidas.")
-    
+
     if st.button("[Bypass Simulación: Forzar Aprobación]", type="primary"):
         aprobar_reserva(secret_key, st.session_state.reserva_actual_id, comentario_bp="Aprobado por Bypass Local")
         st.session_state.estado_flujo = "APROBADO"
@@ -196,23 +208,23 @@ elif st.session_state.estado_flujo == "ESPERANDO_APROBACION_HUMANA":
         st.rerun()
 elif st.session_state.estado_flujo == "APROBADO":
     st.success("✅ Propuesta Aprobada. Ya puedes generar la Carta Oferta oficial.")
-    
+
     if st.button("Generar Carta Oferta PDF", type="primary"):
         fecha_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
+
         ruta_pdf, hash_pdf = generar_carta_oferta(
             empleado_id=contexto_empleado['id_empleado'],
             nombre=contexto_empleado['nombre_completo'],
             cargo=contexto_empleado['grado_actual'],
             nuevo_sueldo=st.session_state.nuevo_sueldo_propuesto
         )
-        
+
         guardar_carta_emitida(secret_key, contexto_empleado['id_empleado'], st.session_state.reserva_actual_id, hash_pdf, fecha_str)
-        
+
         st.session_state.estado_flujo = "FINALIZADO"
         st.success(f"Carta generada y guardada en {ruta_pdf}")
         st.info(f"Hash de Seguridad Registrado: {hash_pdf}")
-        
+
         with open(ruta_pdf, "rb") as file:
             st.download_button(
                 label="Descargar PDF",
